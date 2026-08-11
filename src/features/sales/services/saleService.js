@@ -1,4 +1,4 @@
-import supabase from "../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 
 /**
  * Fetch all sales for a business with their line items

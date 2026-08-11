@@ -1,5 +1,5 @@
 // src/features/reports/services/reportsService.js
-import supabase from "../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 
 export async function fetchReportData({ businessId, reportType, startDate, endDate }) {
   console.log("🔍 Running Report Query:", { businessId, reportType, startDate, endDate });

@@ -1,4 +1,4 @@
-import supabase from "../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 
 /**
  * Returns the current user's business.

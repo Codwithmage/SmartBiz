@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import supabase from "../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
