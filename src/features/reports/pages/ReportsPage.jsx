@@ -16,7 +16,7 @@ export default function ReportsPage() {
   const { business } = useBusiness();
   const [activeTab, setActiveTab] = useState("sales");
   const [preset, setPreset] = useState("this_month");
-  
+
   const initialDates = getDateRangePreset("this_month");
   const [startDate, setStartDate] = useState(initialDates.startDate);
   const [endDate, setEndDate] = useState(initialDates.endDate);
@@ -31,17 +31,18 @@ export default function ReportsPage() {
 
     const { data, summary: pnlSummary, error } = await fetchReportData({
       businessId: business.id,
+      currency: business.currency || "NGN", // Passes business's registered currency
       reportType: activeTab,
       startDate,
       endDate,
     });
 
     if (!error) {
-      setReportData(data);
+      setReportData(data || []);
       if (pnlSummary) setSummary(pnlSummary);
     }
     setLoading(false);
-  }, [business?.id, activeTab, startDate, endDate]);
+  }, [business?.id, business?.currency, activeTab, startDate, endDate]);
 
   useEffect(() => {
     loadData();

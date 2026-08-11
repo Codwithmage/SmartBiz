@@ -1,56 +1,96 @@
 // src/features/reports/services/reportsService.js
-import supabase from "../../../supabase/SupabaseClient";
+import supabase from "../../../supabase/supabaseClient";
+import { formatCurrency } from "../../../utils/currencyUtils";
 
-export async function fetchReportData({ businessId, reportType, startDate, endDate }) {
-  console.log("🔍 Running Report Query:", { businessId, reportType, startDate, endDate });
-
+export async function fetchReportData({ businessId, currency = "NGN", reportType, startDate, endDate }) {
   if (!businessId) {
-    console.error("❌ Business ID is missing or undefined!");
     return { data: [], error: "No active business selected." };
   }
 
   try {
-    let query;
-
     switch (reportType) {
-     case "sales": {
-  const { data, error } = await supabase
-    .from("sales")
-    .select("*")
-    .eq("business_id", businessId)
-    .gte("created_at", `${startDate}T00:00:00Z`)
-    .lte("created_at", `${endDate}T23:59:59Z`)
-    .order("created_at", { ascending: false });
+      case "sales": {
+        const { data, error } = await supabase
+          .from("sales")
+          .select("*")
+          .eq("business_id", businessId)
+          .gte("created_at", `${startDate}T00:00:00Z`)
+          .lte("created_at", `${endDate}T23:59:59Z`)
+          .order("created_at", { ascending: false });
 
-  if (error) return { data: [], error };
+        if (error) return { data: [], error };
 
-  // Transform raw DB rows into clean display objects
-  const formattedData = (data || []).map((sale) => ({
-    "Date": new Date(sale.created_at || sale.sales_date).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-    "Customer": sale.customer_name || "Walk-in Customer",
-    "Payment Method": sale.payment_method || "N/A",
-    "Status": sale.status || "COMPLETED",
-    "Amount": `$${Number(sale.total_amount || sale.total_price || sale.subtotal || 0).toFixed(2)}`,
-  }));
+        const formattedSales = (data || []).map((sale) => ({
+          "Date": new Date(sale.created_at || sale.sales_date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          "Customer": sale.customer_name || "Walk-in Customer",
+          "Payment Method": sale.payment_method || "N/A",
+          "Status": sale.status || "COMPLETED",
+          "Amount": formatCurrency(sale.total_amount || sale.total_price || sale.subtotal, currency),
+        }));
 
-  return { data: formattedData, error: null };
-}
+        return { data: formattedSales, error: null };
+      }
+
       case "expenses": {
-        query = supabase
+        const { data, error } = await supabase
           .from("expenses")
           .select("*")
           .eq("business_id", businessId)
           .gte("created_at", `${startDate}T00:00:00Z`)
           .lte("created_at", `${endDate}T23:59:59Z`)
           .order("created_at", { ascending: false });
-        break;
+
+        if (error) return { data: [], error };
+
+        const formattedExpenses = (data || []).map((exp) => ({
+          "Date": new Date(exp.created_at || exp.expense_date).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          }),
+          "Category": exp.category || "General",
+          "Description": exp.description || "N/A",
+          "Payment Method": exp.payment_method || "Cash",
+          "Amount": formatCurrency(exp.amount, currency),
+        }));
+
+        return { data: formattedExpenses, error: null };
       }
+
+      case "inventory": {
+        const { data, error } = await supabase
+          .from("products")
+          .select("*")
+          .eq("business_id", businessId)
+          .order("name", { ascending: true });
+
+        if (error) return { data: [], error };
+
+        const formattedInventory = (data || []).map((prod) => {
+          const qty = Number(prod.stock_quantity || prod.quantity || 0);
+          const cost = Number(prod.cost_price || 0);
+          const price = Number(prod.selling_price || prod.price || 0);
+
+          return {
+            "Product Name": prod.name || "Unnamed Item",
+            "Category": prod.category || "Uncategorized",
+            "In Stock": qty.toLocaleString(),
+            "Unit Cost": formatCurrency(cost, currency),
+            "Unit Price": formatCurrency(price, currency),
+            "Cost Valuation": formatCurrency(qty * cost, currency),
+            "Retail Valuation": formatCurrency(qty * price, currency),
+          };
+        });
+
+        return { data: formattedInventory, error: null };
+      }
+
       case "profit": {
         const [salesRes, expenseRes] = await Promise.all([
           supabase
@@ -67,44 +107,30 @@ export async function fetchReportData({ businessId, reportType, startDate, endDa
             .lte("created_at", `${endDate}T23:59:59Z`),
         ]);
 
-        console.log("📊 Profit Raw Data:", { sales: salesRes.data, expenses: expenseRes.data });
-
         const totalRevenue =
           salesRes.data?.reduce(
-            (acc, s) => acc + Number(s.total_price || s.total_amount || s.amount || 0),
+            (acc, s) => acc + Number(s.total_amount || s.total_price || s.subtotal || 0),
             0
           ) || 0;
 
         const totalExpenses =
           expenseRes.data?.reduce((acc, e) => acc + Number(e.amount || 0), 0) || 0;
 
-        return {
-          data: [
-            { metric: "Total Revenue", amount: totalRevenue },
-            { metric: "Total Expenses", amount: totalExpenses },
-            { metric: "Net Profit / (Loss)", amount: totalRevenue - totalExpenses },
-          ],
-          error: null,
-        };
+        const netProfit = totalRevenue - totalExpenses;
+
+        const formattedPNL = [
+          { "Metric": "Total Revenue", "Amount": formatCurrency(totalRevenue, currency) },
+          { "Metric": "Total Expenses", "Amount": formatCurrency(totalExpenses, currency) },
+          { "Metric": "Net Profit / (Loss)", "Amount": formatCurrency(netProfit, currency) },
+        ];
+
+        return { data: formattedPNL, error: null };
       }
-      case "inventory": {
-        query = supabase
-          .from("products")
-          .select("*")
-          //.eq("business_id", businessId)
-          .order("name", { ascending: true });
-        break;
-      }
+
       default:
         throw new Error("Invalid report type");
     }
-
-    const { data, error } = await query;
-    console.log(`📦 ${reportType} Report Results:`, { data, error });
-
-    return { data: data || [], error };
   } catch (err) {
-    console.error("❌ Catch Error:", err);
     return { data: [], error: err.message };
   }
 }

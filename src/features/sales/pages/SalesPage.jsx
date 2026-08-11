@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useSales } from "../context/SalesContext";
 import { useInventory } from "../../inventory/context/InventoryContext";
 import { useBusiness } from "../../../context/BusinessContext";
+import { formatCurrency } from "../../../utils/currencyUtils";
 
 // Local timezone helper to accurately match "Today"
 const isToday = (dateString) => {
@@ -17,6 +18,8 @@ const isToday = (dateString) => {
 
 function SalesPage() {
   const { business } = useBusiness();
+  const currency = business?.currency || "NGN";
+  
   const { sales, loadingSales, loadSales, addSale } = useSales();
   const { products, loadProducts } = useInventory();
 
@@ -52,7 +55,6 @@ function SalesPage() {
       const amount = parseFloat(s.total_amount || 0);
       totalSales += amount;
 
-      // Fix 1: Local timezone check instead of UTC split
       if (isToday(s.created_at)) {
         todaysSales += amount;
       }
@@ -157,7 +159,6 @@ function SalesPage() {
       return;
     }
 
-    // Fix 2: Re-fetch sales and products to update state immediately
     if (businessId) {
       await Promise.all([loadSales(businessId), loadProducts(businessId)]);
     }
@@ -223,14 +224,14 @@ function SalesPage() {
             <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
               <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Today's Sales</p>
               <p className="mt-1 text-lg sm:text-2xl font-bold text-green-600">
-                ₦{overviewStats.todaysSales.toLocaleString()}
+                {formatCurrency(overviewStats.todaysSales, currency)}
               </p>
             </div>
 
             <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
               <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Total Sales</p>
               <p className="mt-1 text-lg sm:text-2xl font-bold text-gray-900">
-                ₦{overviewStats.totalSales.toLocaleString()}
+                {formatCurrency(overviewStats.totalSales, currency)}
               </p>
             </div>
 
@@ -244,14 +245,14 @@ function SalesPage() {
             <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
               <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Average Sale</p>
               <p className="mt-1 text-lg sm:text-2xl font-bold text-gray-900">
-                ₦{overviewStats.averageSale.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                {formatCurrency(overviewStats.averageSale, currency)}
               </p>
             </div>
 
             <div className="col-span-2 sm:col-span-1 rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
               <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Credit / Outstanding</p>
               <p className="mt-1 text-lg sm:text-2xl font-bold text-red-600">
-                ₦{overviewStats.outstandingSales.toLocaleString()}
+                {formatCurrency(overviewStats.outstandingSales, currency)}
               </p>
             </div>
           </div>
@@ -322,7 +323,7 @@ function SalesPage() {
                           {sale.sale_items?.length || 0}
                         </td>
                         <td className="py-3 px-3 text-right font-semibold text-gray-900 whitespace-nowrap">
-                          ₦{parseFloat(sale.total_amount || 0).toLocaleString()}
+                          {formatCurrency(sale.total_amount, currency)}
                         </td>
                         <td className="py-3 px-3 text-center">
                           <span
@@ -380,7 +381,7 @@ function SalesPage() {
                         </p>
                       </div>
                       <span className="text-sm font-bold text-blue-600">
-                        ₦{Number(p.selling_price || 0).toLocaleString()}
+                        {formatCurrency(p.selling_price, currency)}
                       </span>
                     </div>
                   ))}
@@ -408,7 +409,7 @@ function SalesPage() {
                     {cart.map((item) => (
                       <tr key={item.product_id}>
                         <td className="p-3 font-medium text-gray-900">{item.product_name}</td>
-                        <td className="p-3 whitespace-nowrap">₦{item.unit_price.toLocaleString()}</td>
+                        <td className="p-3 whitespace-nowrap">{formatCurrency(item.unit_price, currency)}</td>
                         <td className="p-3 text-center">
                           <div className="flex items-center justify-center gap-1">
                             <button
@@ -444,7 +445,7 @@ function SalesPage() {
                           </div>
                         </td>
                         <td className="p-3 text-right font-semibold whitespace-nowrap">
-                          ₦{(item.unit_price * item.quantity).toLocaleString()}
+                          {formatCurrency(item.unit_price * item.quantity, currency)}
                         </td>
                       </tr>
                     ))}
@@ -519,15 +520,15 @@ function SalesPage() {
             <div className="border-t pt-3 space-y-2 text-sm">
               <div className="flex justify-between text-gray-600">
                 <span>Subtotal:</span>
-                <span>₦{cartSubtotal.toLocaleString()}</span>
+                <span>{formatCurrency(cartSubtotal, currency)}</span>
               </div>
               <div className="flex justify-between text-gray-600">
                 <span>Discount:</span>
-                <span>-₦{discountAmount.toLocaleString()}</span>
+                <span>-{formatCurrency(discountAmount, currency)}</span>
               </div>
               <div className="flex justify-between font-bold text-base text-gray-900 border-t pt-2">
                 <span>Total:</span>
-                <span>₦{cartTotal.toLocaleString()}</span>
+                <span>{formatCurrency(cartTotal, currency)}</span>
               </div>
             </div>
 
@@ -591,7 +592,7 @@ function SalesPage() {
                       <td className="p-2">{item.product_name}</td>
                       <td className="p-2 text-center">{item.quantity}</td>
                       <td className="p-2 text-right font-medium">
-                        ₦{parseFloat(item.total_price || 0).toLocaleString()}
+                        {formatCurrency(item.total_price, currency)}
                       </td>
                     </tr>
                   ))}
@@ -610,7 +611,7 @@ function SalesPage() {
               </div>
               <div className="flex justify-between text-sm font-bold text-gray-900 pt-2 border-t">
                 <span>Total Amount:</span>
-                <span>₦{parseFloat(selectedSale.total_amount || 0).toLocaleString()}</span>
+                <span>{formatCurrency(selectedSale.total_amount, currency)}</span>
               </div>
             </div>
 

@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
 
+// Date Helpers
 const isToday = (dateString) => {
   if (!dateString) return false;
   const date = new Date(dateString);
@@ -22,10 +23,27 @@ const isThisMonth = (dateString) => {
   );
 };
 
+// Helper to map currency codes to symbols
+const getSymbolFromCurrency = (currencyCode) => {
+  switch (currencyCode?.toUpperCase()) {
+    case "USD":
+      return "$";
+    case "EUR":
+      return "€";
+    case "GBP":
+      return "£";
+    case "NGN":
+      return "₦";
+    default:
+      return currencyCode || "$";
+  }
+};
+
 export default function ExpensesPage() {
   const [activeTab, setActiveTab] = useState("OVERVIEW");
   const [expenses, setExpenses] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [currencySymbol, setCurrencySymbol] = useState("$");
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -35,12 +53,14 @@ export default function ExpensesPage() {
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
 
+  // Filters & Search
   const [searchQuery, setSearchQuery] = useState("");
   const [filterDate, setFilterDate] = useState("");
   const [filterCategory, setFilterCategory] = useState("ALL");
   const [filterPaymentMethod, setFilterPaymentMethod] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
 
+  // Form States
   const [expenseForm, setExpenseForm] = useState({
     title: "",
     categoryId: "",
@@ -55,45 +75,85 @@ export default function ExpensesPage() {
 
   const [categoryNameInput, setCategoryNameInput] = useState("");
 
-  // Helper to get category name by ID or fallback
-  const getCategoryName = (catIdOrName) => {
-    if (!catIdOrName) return "Uncategorized";
-    const found = categories.find((c) => c.id === catIdOrName || c.name === catIdOrName);
-    return found ? found.name : catIdOrName;
-  };
+  // Helper to resolve category display name
+  const getCategoryName = useCallback(
+    (catIdOrName) => {
+      if (!catIdOrName) return "Uncategorized";
+      const found = categories.find(
+        (c) => c.id === catIdOrName || c.name === catIdOrName
+      );
+      return found ? found.name : catIdOrName;
+    },
+    [categories]
+  );
 
   // ----------------------------------------------------
-  // 1. FETCH DATA FROM SUPABASE
+  // 1. FETCH DATA & BUSINESS CURRENCY FROM SUPABASE
   // ----------------------------------------------------
-  const fetchAllData = async () => {
+  const fetchAllData = useCallback(async () => {
     try {
       setIsLoading(true);
       setErrorMessage("");
 
-      const [expensesRes, categoriesRes] = await Promise.all([
+      const { data: { user } } = await supabase.auth.getUser();
+
+      const queries = [
         supabase.from("expenses").select("*").order("date", { ascending: false }),
         supabase.from("expense_categories").select("*").order("name", { ascending: true }),
-      ]);
+      ];
+
+      if (user) {
+        queries.push(
+          supabase
+            .from("businesses")
+            .select("currency, currency_symbol")
+            .eq("owner_id", user.id)
+            .maybeSingle()
+        );
+      }
+
+      const [expensesRes, categoriesRes, businessRes] = await Promise.all(queries);
 
       if (expensesRes.error) throw expensesRes.error;
       if (categoriesRes.error) throw categoriesRes.error;
 
+      if (businessRes?.data) {
+        const bus = businessRes.data;
+        const symbol = bus.currency_symbol || getSymbolFromCurrency(bus.currency);
+        setCurrencySymbol(symbol);
+      }
+
       setExpenses(expensesRes.data || []);
       setCategories(categoriesRes.data || []);
     } catch (err) {
-      console.error("Failed to load expenses or categories:", err);
+      console.error("Failed to load expenses/categories:", err);
       setErrorMessage(`Database Error: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchAllData();
-  }, []);
+  }, [fetchAllData]);
+
+  // Helper to get Business ID safely
+  const getBusinessId = async () => {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) throw new Error("User not authenticated");
+
+    const { data: business, error: businessError } = await supabase
+      .from("businesses")
+      .select("id")
+      .eq("owner_id", user.id)
+      .maybeSingle();
+
+    if (businessError) throw businessError;
+    return business?.id || null;
+  };
 
   // ----------------------------------------------------
-  // 2. STATS & FILTERS
+  // 2. STATS & COMPUTED FILTERS
   // ----------------------------------------------------
   const overviewStats = useMemo(() => {
     let totalExpenses = 0;
@@ -124,10 +184,12 @@ export default function ExpensesPage() {
         item.id?.toString().toLowerCase().includes(searchQuery.toLowerCase());
 
       const matchesDate = filterDate ? item.date?.startsWith(filterDate) : true;
-      
+
       const catVal = item.category_id || item.category;
       const matchesCategory =
-        filterCategory === "ALL" || catVal === filterCategory || getCategoryName(catVal) === filterCategory;
+        filterCategory === "ALL" ||
+        catVal === filterCategory ||
+        getCategoryName(catVal) === filterCategory;
 
       const matchesPayment =
         filterPaymentMethod === "ALL" || item.payment_method === filterPaymentMethod;
@@ -143,11 +205,26 @@ export default function ExpensesPage() {
         matchesStatus
       );
     });
-  }, [expenses, searchQuery, filterDate, filterCategory, filterPaymentMethod, filterStatus, categories]);
+  }, [expenses, searchQuery, filterDate, filterCategory, filterPaymentMethod, filterStatus, getCategoryName]);
 
   // ----------------------------------------------------
-  // 3. SAVE / DELETE EXPENSE
+  // 3. EXPENSE ACTIONS (SAVE / EDIT / DELETE)
   // ----------------------------------------------------
+  const resetExpenseForm = () => {
+    const activeCat = categories.find((c) => c.active);
+    setExpenseForm({
+      title: "",
+      categoryId: activeCat ? activeCat.id : "",
+      amount: "",
+      date: new Date().toISOString().split("T")[0],
+      payment_method: "CASH",
+      status: "PAID",
+      vendor: "",
+      reference: "",
+      description: "",
+    });
+  };
+
   const handleSaveExpense = async (e) => {
     e.preventDefault();
     if (!expenseForm.title || !expenseForm.amount || !expenseForm.categoryId) {
@@ -155,17 +232,7 @@ export default function ExpensesPage() {
     }
 
     try {
-      // Get logged-in user & business
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error("User not authenticated");
-
-      const { data: business, error: businessError } = await supabase
-        .from("businesses")
-        .select("id")
-        .eq("owner_id", user.id)
-        .single();
-
-      if (businessError || !business) throw new Error("No business found for this user");
+      const businessId = await getBusinessId();
 
       const payload = {
         title: expenseForm.title,
@@ -177,7 +244,7 @@ export default function ExpensesPage() {
         vendor: expenseForm.vendor,
         reference: expenseForm.reference,
         description: expenseForm.description,
-        business_id: business.id,
+        ...(businessId && { business_id: businessId }),
       };
 
       if (editingExpense) {
@@ -227,21 +294,6 @@ export default function ExpensesPage() {
     }
   };
 
-  const resetExpenseForm = () => {
-    const activeCat = categories.find((c) => c.active);
-    setExpenseForm({
-      title: "",
-      categoryId: activeCat ? activeCat.id : "",
-      amount: "",
-      date: new Date().toISOString().split("T")[0],
-      payment_method: "CASH",
-      status: "PAID",
-      vendor: "",
-      reference: "",
-      description: "",
-    });
-  };
-
   const handleOpenEditExpense = (expense) => {
     setEditingExpense(expense);
     setExpenseForm({
@@ -260,23 +312,14 @@ export default function ExpensesPage() {
   };
 
   // ----------------------------------------------------
-  // 4. SAVE / TOGGLE / DELETE CATEGORY
+  // 4. CATEGORY ACTIONS (SAVE / TOGGLE / DELETE)
   // ----------------------------------------------------
   const handleSaveCategory = async (e) => {
     e.preventDefault();
     if (!categoryNameInput.trim()) return;
 
     try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error("User not authenticated");
-
-      const { data: business, error: businessError } = await supabase
-        .from("businesses")
-        .select("id")
-        .eq("owner_id", user.id)
-        .single();
-
-      if (businessError || !business) throw new Error("No business found for this user");
+      const businessId = await getBusinessId();
 
       if (editingCategory) {
         const { data, error } = await supabase
@@ -287,25 +330,23 @@ export default function ExpensesPage() {
           .single();
 
         if (error) throw error;
-
         setCategories((prev) =>
           prev.map((cat) => (cat.id === editingCategory.id ? data : cat))
         );
       } else {
+        const payload = {
+          name: categoryNameInput.trim(),
+          active: true,
+          ...(businessId && { business_id: businessId }),
+        };
+
         const { data, error } = await supabase
           .from("expense_categories")
-          .insert([
-            {
-              name: categoryNameInput.trim(),
-              business_id: business.id,
-              active: true,
-            },
-          ])
+          .insert([payload])
           .select()
           .single();
 
         if (error) throw error;
-
         setCategories((prev) => [...prev, data]);
       }
 
@@ -354,9 +395,7 @@ export default function ExpensesPage() {
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <p className="text-sm font-semibold text-gray-500">
-          Loading expenses from database...
-        </p>
+        <p className="text-sm font-semibold text-gray-500">Loading expenses...</p>
       </div>
     );
   }
@@ -369,7 +408,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Header & Framework Tabs */}
+      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Expenses</h1>
@@ -425,32 +464,32 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* 1. OVERVIEW */}
+      {/* Tab 1: OVERVIEW */}
       {activeTab === "OVERVIEW" && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
             <div className="rounded-xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-semibold text-gray-500 uppercase">Total Expenses</p>
               <p className="mt-1 text-xl sm:text-2xl font-bold text-gray-900">
-                ₦{overviewStats.totalExpenses.toLocaleString()}
+                {currencySymbol}{overviewStats.totalExpenses.toLocaleString()}
               </p>
             </div>
             <div className="rounded-xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-semibold text-gray-500 uppercase">This Month</p>
               <p className="mt-1 text-xl sm:text-2xl font-bold text-blue-600">
-                ₦{overviewStats.thisMonth.toLocaleString()}
+                {currencySymbol}{overviewStats.thisMonth.toLocaleString()}
               </p>
             </div>
             <div className="rounded-xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-semibold text-gray-500 uppercase">Today</p>
               <p className="mt-1 text-xl sm:text-2xl font-bold text-green-600">
-                ₦{overviewStats.today.toLocaleString()}
+                {currencySymbol}{overviewStats.today.toLocaleString()}
               </p>
             </div>
             <div className="rounded-xl border bg-white p-4 shadow-sm">
               <p className="text-xs font-semibold text-gray-500 uppercase">Pending Expenses</p>
               <p className="mt-1 text-xl sm:text-2xl font-bold text-amber-600">
-                ₦{overviewStats.pendingExpenses.toLocaleString()}
+                {currencySymbol}{overviewStats.pendingExpenses.toLocaleString()}
               </p>
             </div>
           </div>
@@ -469,7 +508,7 @@ export default function ExpensesPage() {
             <div className="divide-y">
               {overviewStats.recentExpenses.length === 0 ? (
                 <p className="py-4 text-center text-sm text-gray-500">
-                  No expenses recorded yet in database.
+                  No expenses recorded yet.
                 </p>
               ) : (
                 overviewStats.recentExpenses.map((exp) => (
@@ -483,7 +522,7 @@ export default function ExpensesPage() {
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-bold text-gray-900">
-                        ₦{Number(exp.amount).toLocaleString()}
+                        {currencySymbol}{Number(exp.amount).toLocaleString()}
                       </p>
                       <span
                         className={`text-[10px] font-bold uppercase rounded px-2 py-0.5 ${
@@ -503,7 +542,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* 2. ALL EXPENSES */}
+      {/* Tab 2: ALL EXPENSES */}
       {activeTab === "ALL_EXPENSES" && (
         <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -570,7 +609,7 @@ export default function ExpensesPage() {
                 {filteredExpenses.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-6 text-center text-gray-500">
-                      No matching records found in database.
+                      No matching expenses found.
                     </td>
                   </tr>
                 ) : (
@@ -586,7 +625,7 @@ export default function ExpensesPage() {
                       </td>
                       <td className="py-3 px-3 uppercase text-xs">{exp.payment_method}</td>
                       <td className="py-3 px-3 text-right font-bold text-gray-900 whitespace-nowrap">
-                        ₦{Number(exp.amount).toLocaleString()}
+                        {currencySymbol}{Number(exp.amount).toLocaleString()}
                       </td>
                       <td className="py-3 px-3 text-center">
                         <span
@@ -616,7 +655,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* 3. CATEGORIES */}
+      {/* Tab 3: CATEGORIES */}
       {activeTab === "CATEGORIES" && (
         <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
@@ -683,7 +722,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* 4. ADD / EDIT EXPENSE MODAL */}
+      {/* Add / Edit Expense Modal */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
@@ -702,12 +741,12 @@ export default function ExpensesPage() {
             <form onSubmit={handleSaveExpense} className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                  Expense Name *
+                  Expense Title *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Office Stationery"
+                  placeholder="e.g. Office Supplies"
                   value={expenseForm.title}
                   onChange={(e) =>
                     setExpenseForm({ ...expenseForm, title: e.target.value })
@@ -740,12 +779,13 @@ export default function ExpensesPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                    Amount (₦) *
+                    Amount ({currencySymbol}) *
                   </label>
                   <input
                     type="number"
                     required
                     min="0"
+                    step="any"
                     placeholder="0.00"
                     value={expenseForm.amount}
                     onChange={(e) =>
@@ -778,10 +818,7 @@ export default function ExpensesPage() {
                   <select
                     value={expenseForm.payment_method}
                     onChange={(e) =>
-                      setExpenseForm({
-                        ...expenseForm,
-                        payment_method: e.target.value,
-                      })
+                      setExpenseForm({ ...expenseForm, payment_method: e.target.value })
                     }
                     className="w-full rounded-md border p-2 text-sm focus:outline-none"
                   >
@@ -813,13 +850,10 @@ export default function ExpensesPage() {
                   </label>
                   <input
                     type="text"
-                    placeholder="Receipt / Invoice #"
+                    placeholder="Invoice or Receipt #"
                     value={expenseForm.reference}
                     onChange={(e) =>
-                      setExpenseForm({
-                        ...expenseForm,
-                        reference: e.target.value,
-                      })
+                      setExpenseForm({ ...expenseForm, reference: e.target.value })
                     }
                     className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
@@ -828,17 +862,30 @@ export default function ExpensesPage() {
 
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+                  Status
+                </label>
+                <select
+                  value={expenseForm.status}
+                  onChange={(e) =>
+                    setExpenseForm({ ...expenseForm, status: e.target.value })
+                  }
+                  className="w-full rounded-md border p-2 text-sm focus:outline-none"
+                >
+                  <option value="PAID">Paid</option>
+                  <option value="PENDING">Pending</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
                   Description
                 </label>
                 <textarea
-                  rows="2"
-                  placeholder="Additional context..."
+                  rows={3}
+                  placeholder="Additional notes..."
                   value={expenseForm.description}
                   onChange={(e) =>
-                    setExpenseForm({
-                      ...expenseForm,
-                      description: e.target.value,
-                    })
+                    setExpenseForm({ ...expenseForm, description: e.target.value })
                   }
                   className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
@@ -848,15 +895,15 @@ export default function ExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="rounded-md border px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100"
+                  className="rounded-md border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                  className="rounded-md bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
                 >
-                  Save Expense
+                  {editingExpense ? "Save Changes" : "Create Expense"}
                 </button>
               </div>
             </form>
@@ -864,7 +911,56 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* 5. EXPENSE DETAILS MODAL */}
+      {/* Add / Edit Category Modal */}
+      {isCategoryModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-3">
+              <h3 className="text-base sm:text-lg font-bold text-gray-900">
+                {editingCategory ? "Edit Category" : "Add Category"}
+              </h3>
+              <button
+                onClick={() => setIsCategoryModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={handleSaveCategory} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+                  Category Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Travel, Utilities, Software"
+                  value={categoryNameInput}
+                  onChange={(e) => setCategoryNameInput(e.target.value)}
+                  className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="flex justify-end gap-2 border-t pt-3">
+                <button
+                  type="button"
+                  onClick={() => setIsCategoryModalOpen(false)}
+                  className="rounded-md border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-md bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
+                >
+                  Save Category
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Expense Details Modal */}
       {selectedExpense && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
@@ -877,123 +973,70 @@ export default function ExpensesPage() {
                 ✕
               </button>
             </div>
-
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Title:</span>
-                <span className="font-semibold text-gray-900">{selectedExpense.title}</span>
+            <div className="space-y-3 text-xs sm:text-sm">
+              <div>
+                <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Title</p>
+                <p className="font-semibold text-gray-900">{selectedExpense.title}</p>
               </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Amount:</span>
-                <span className="font-bold text-gray-900">₦{Number(selectedExpense.amount).toLocaleString()}</span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Amount</p>
+                  <p className="font-bold text-gray-900">{currencySymbol}{Number(selectedExpense.amount).toLocaleString()}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Category</p>
+                  <p className="text-gray-800">{getCategoryName(selectedExpense.category_id || selectedExpense.category)}</p>
+                </div>
               </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Category:</span>
-                <span className="font-medium text-gray-900">{getCategoryName(selectedExpense.category_id || selectedExpense.category)}</span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Date</p>
+                  <p className="text-gray-800">{selectedExpense.date ? new Date(selectedExpense.date).toLocaleDateString() : "-"}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Payment Method</p>
+                  <p className="text-gray-800 uppercase">{selectedExpense.payment_method}</p>
+                </div>
               </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Date:</span>
-                <span className="font-medium text-gray-900">{selectedExpense.date ? new Date(selectedExpense.date).toLocaleDateString() : "-"}</span>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Vendor</p>
+                  <p className="text-gray-800">{selectedExpense.vendor || "N/A"}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Reference</p>
+                  <p className="text-gray-800">{selectedExpense.reference || "N/A"}</p>
+                </div>
               </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Payment Method:</span>
-                <span className="font-medium uppercase text-gray-900">{selectedExpense.payment_method}</span>
-              </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Status:</span>
-                <span className="font-bold text-xs uppercase px-2 py-0.5 rounded bg-green-100 text-green-800">
+              <div>
+                <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Status</p>
+                <span className={`inline-block mt-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                  selectedExpense.status === "PAID" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"
+                }`}>
                   {selectedExpense.status}
                 </span>
               </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Vendor:</span>
-                <span className="font-medium text-gray-900">{selectedExpense.vendor || "N/A"}</span>
-              </div>
-              <div className="flex justify-between border-b pb-2">
-                <span className="text-gray-500">Reference:</span>
-                <span className="font-medium text-gray-900">{selectedExpense.reference || "N/A"}</span>
-              </div>
               {selectedExpense.description && (
-                <div className="pt-1">
-                  <span className="text-gray-500 block mb-1">Description:</span>
-                  <p className="p-2 rounded bg-gray-50 text-xs text-gray-700">{selectedExpense.description}</p>
+                <div>
+                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Description</p>
+                  <p className="text-gray-700 bg-gray-50 p-2 rounded border mt-1">{selectedExpense.description}</p>
                 </div>
               )}
             </div>
-
-            <div className="flex justify-between items-center pt-4 border-t">
+            <div className="flex justify-end gap-2 border-t pt-3">
               <button
                 onClick={() => handleDeleteExpense(selectedExpense.id)}
-                className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+                className="rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
               >
                 Delete
               </button>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => handleOpenEditExpense(selectedExpense)}
-                  className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => setSelectedExpense(null)}
-                  className="rounded-md border px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 6. ADD / EDIT CATEGORY MODAL */}
-      {isCategoryModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
-          <div className="w-full max-w-sm rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
-            <div className="flex justify-between items-center border-b pb-3">
-              <h3 className="text-base sm:text-lg font-bold text-gray-900">
-                {editingCategory ? "Edit Category" : "Add Category"}
-              </h3>
               <button
-                onClick={() => setIsCategoryModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 text-lg font-bold"
+                onClick={() => handleOpenEditExpense(selectedExpense)}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
               >
-                ✕
+                Edit
               </button>
             </div>
-
-            <form onSubmit={handleSaveCategory} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                  Category Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Utilities, Logistics..."
-                  value={categoryNameInput}
-                  onChange={(e) => setCategoryNameInput(e.target.value)}
-                  className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3 border-t">
-                <button
-                  type="button"
-                  onClick={() => setIsCategoryModalOpen(false)}
-                  className="rounded-md border px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
-                >
-                  Save Category
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}
