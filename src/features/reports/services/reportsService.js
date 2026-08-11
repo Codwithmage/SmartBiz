@@ -1,5 +1,5 @@
 // src/features/reports/services/reportsService.js
-import supabase from "../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 import { formatCurrency } from "../../../utils/currencyUtils";
 
 export async function fetchReportData({ businessId, currency = "NGN", reportType, startDate, endDate }) {
