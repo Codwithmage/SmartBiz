@@ -13,16 +13,34 @@ export async function fetchReportData({ businessId, reportType, startDate, endDa
     let query;
 
     switch (reportType) {
-      case "sales": {
-        query = supabase
-          .from("sales")
-          .select("*")
-          .eq("business_id", businessId)
-          .gte("created_at", `${startDate}T00:00:00Z`)
-          .lte("created_at", `${endDate}T23:59:59Z`)
-          .order("created_at", { ascending: false });
-        break;
-      }
+     case "sales": {
+  const { data, error } = await supabase
+    .from("sales")
+    .select("*")
+    .eq("business_id", businessId)
+    .gte("created_at", `${startDate}T00:00:00Z`)
+    .lte("created_at", `${endDate}T23:59:59Z`)
+    .order("created_at", { ascending: false });
+
+  if (error) return { data: [], error };
+
+  // Transform raw DB rows into clean display objects
+  const formattedData = (data || []).map((sale) => ({
+    "Date": new Date(sale.created_at || sale.sales_date).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+    "Customer": sale.customer_name || "Walk-in Customer",
+    "Payment Method": sale.payment_method || "N/A",
+    "Status": sale.status || "COMPLETED",
+    "Amount": `$${Number(sale.total_amount || sale.total_price || sale.subtotal || 0).toFixed(2)}`,
+  }));
+
+  return { data: formattedData, error: null };
+}
       case "expenses": {
         query = supabase
           .from("expenses")
