@@ -15,6 +15,9 @@ import CategoriesPage from "../features/categories/pages/CategoriesPage";
 import AddCategoryPage from "../features/categories/pages/AddCategoryPage";
 import InventoryOverview from "../features/inventory/pages/InventoryOverview";
 
+// Context Providers
+import { CategoryProvider } from "../context/CategoryContext"; // <-- Adjust path if stored in context or features
+
 // Sales & Expenses
 import SalesPage from "../features/sales/pages/SalesPage";
 import ExpensesPage from "../features/expenses/pages/ExpensesPage";
@@ -59,11 +62,13 @@ const router = createBrowserRouter([
     ),
   },
 
-  // Main Dashboard Routes (Requires Business + Uses AppLayout)
+  // Main Dashboard Routes (Requires Business + Uses AppLayout + CategoryProvider)
   {
     element: (
       <ProtectedRoute>
-        <AppLayout />
+        <CategoryProvider>
+          <AppLayout />
+        </CategoryProvider>
       </ProtectedRoute>
     ),
     children: [
