@@ -91,47 +91,55 @@ export default function ExpensesPage() {
   // 1. FETCH DATA & BUSINESS CURRENCY FROM SUPABASE
   // ----------------------------------------------------
   const fetchAllData = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      setErrorMessage("");
+  try {
+    setIsLoading(true);
+    setErrorMessage("");
 
-      const { data: { user } } = await supabase.auth.getUser();
-
-      const queries = [
-        supabase.from("expenses").select("*").order("date", { ascending: false }),
-        supabase.from("expense_categories").select("*").order("name", { ascending: true }),
-      ];
-
-      if (user) {
-        queries.push(
-          supabase
-            .from("businesses")
-            .select("currency, currency_symbol")
-            .eq("owner_id", user.id)
-            .maybeSingle()
-        );
-      }
-
-      const [expensesRes, categoriesRes, businessRes] = await Promise.all(queries);
-
-      if (expensesRes.error) throw expensesRes.error;
-      if (categoriesRes.error) throw categoriesRes.error;
-
-      if (businessRes?.data) {
-        const bus = businessRes.data;
-        const symbol = bus.currency_symbol || getSymbolFromCurrency(bus.currency);
-        setCurrencySymbol(symbol);
-      }
-
-      setExpenses(expensesRes.data || []);
-      setCategories(categoriesRes.data || []);
-    } catch (err) {
-      console.error("Failed to load expenses/categories:", err);
-      setErrorMessage(`Database Error: ${err.message}`);
-    } finally {
-      setIsLoading(false);
+    // 1. Ensure user session is fully resolved first
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      console.warn("No active user session found.");
     }
-  }, []);
+
+    // 2. Fetch expenses and categories
+    const [expensesRes, categoriesRes] = await Promise.all([
+      supabase.from("expenses").select("*").order("date", { ascending: false }),
+      supabase.from("expense_categories").select("*").order("name", { ascending: true }),
+    ]);
+
+    if (expensesRes.error) throw expensesRes.error;
+    if (categoriesRes.error) throw categoriesRes.error;
+
+    setExpenses(expensesRes.data || []);
+    setCategories(categoriesRes.data || []);
+
+    // 3. Fetch business settings independently to prevent total failure if missing
+    if (user) {
+      const { data: businessData, error: businessError } = await supabase
+        .from("businesses")
+        .select("currency")
+        .eq("owner_id", user.id) // Verify if your DB uses owner_id or user_id
+        .maybeSingle();
+
+      if (businessError) {
+        console.error("Error fetching business currency:", businessError);
+      }
+
+      if (businessData) {
+        const symbol =
+          businessData.currency_symbol ||
+          getSymbolFromCurrency(businessData.currency);
+        
+        if (symbol) setCurrencySymbol(symbol);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load expenses/categories:", err);
+    setErrorMessage(`Database Error: ${err.message}`);
+  } finally {
+    setIsLoading(false);
+  }
+}, []);
 
   useEffect(() => {
     fetchAllData();
@@ -846,34 +854,34 @@ export default function ExpensesPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                    Reference
+                    Status
                   </label>
-                  <input
-                    type="text"
-                    placeholder="Invoice or Receipt #"
-                    value={expenseForm.reference}
+                  <select
+                    value={expenseForm.status}
                     onChange={(e) =>
-                      setExpenseForm({ ...expenseForm, reference: e.target.value })
+                      setExpenseForm({ ...expenseForm, status: e.target.value })
                     }
-                    className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                    className="w-full rounded-md border p-2 text-sm focus:outline-none"
+                  >
+                    <option value="PAID">Paid</option>
+                    <option value="PENDING">Pending</option>
+                  </select>
                 </div>
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                  Status
+                  Reference / Receipt No.
                 </label>
-                <select
-                  value={expenseForm.status}
+                <input
+                  type="text"
+                  placeholder="e.g. REF-1092"
+                  value={expenseForm.reference}
                   onChange={(e) =>
-                    setExpenseForm({ ...expenseForm, status: e.target.value })
+                    setExpenseForm({ ...expenseForm, reference: e.target.value })
                   }
-                  className="w-full rounded-md border p-2 text-sm focus:outline-none"
-                >
-                  <option value="PAID">Paid</option>
-                  <option value="PENDING">Pending</option>
-                </select>
+                  className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
               </div>
 
               <div>
@@ -895,15 +903,15 @@ export default function ExpensesPage() {
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="rounded-md border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                  className="rounded-lg border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
                 >
-                  {editingExpense ? "Save Changes" : "Create Expense"}
+                  {editingExpense ? "Update Expense" : "Save Expense"}
                 </button>
               </div>
             </form>
@@ -926,6 +934,7 @@ export default function ExpensesPage() {
                 ✕
               </button>
             </div>
+
             <form onSubmit={handleSaveCategory} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
@@ -934,23 +943,24 @@ export default function ExpensesPage() {
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Travel, Utilities, Software"
+                  placeholder="e.g. Marketing & Advertising"
                   value={categoryNameInput}
                   onChange={(e) => setCategoryNameInput(e.target.value)}
                   className="w-full rounded-md border p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              <div className="flex justify-end gap-2 border-t pt-3">
+
+              <div className="flex justify-end gap-2 pt-2 border-t">
                 <button
                   type="button"
                   onClick={() => setIsCategoryModalOpen(false)}
-                  className="rounded-md border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-50"
+                  className="rounded-lg border px-4 py-2 text-xs sm:text-sm font-semibold text-gray-600 hover:bg-gray-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-xs sm:text-sm font-semibold text-white hover:bg-blue-700"
                 >
                   Save Category
                 </button>
@@ -965,7 +975,9 @@ export default function ExpensesPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
-              <h3 className="text-base sm:text-lg font-bold text-gray-900">Expense Details</h3>
+              <h3 className="text-base sm:text-lg font-bold text-gray-900">
+                Expense Details
+              </h3>
               <button
                 onClick={() => setSelectedExpense(null)}
                 className="text-gray-400 hover:text-gray-600 text-lg font-bold"
@@ -973,66 +985,76 @@ export default function ExpensesPage() {
                 ✕
               </button>
             </div>
+
             <div className="space-y-3 text-xs sm:text-sm">
-              <div>
-                <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Title</p>
-                <p className="font-semibold text-gray-900">{selectedExpense.title}</p>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Title:</span>
+                <span className="font-semibold text-gray-900">{selectedExpense.title}</span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Amount</p>
-                  <p className="font-bold text-gray-900">{currencySymbol}{Number(selectedExpense.amount).toLocaleString()}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Category</p>
-                  <p className="text-gray-800">{getCategoryName(selectedExpense.category_id || selectedExpense.category)}</p>
-                </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Amount:</span>
+                <span className="font-bold text-gray-900">
+                  {currencySymbol}{Number(selectedExpense.amount).toLocaleString()}
+                </span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Date</p>
-                  <p className="text-gray-800">{selectedExpense.date ? new Date(selectedExpense.date).toLocaleDateString() : "-"}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Payment Method</p>
-                  <p className="text-gray-800 uppercase">{selectedExpense.payment_method}</p>
-                </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Category:</span>
+                <span className="font-semibold text-gray-900">
+                  {getCategoryName(selectedExpense.category_id || selectedExpense.category)}
+                </span>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Vendor</p>
-                  <p className="text-gray-800">{selectedExpense.vendor || "N/A"}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Reference</p>
-                  <p className="text-gray-800">{selectedExpense.reference || "N/A"}</p>
-                </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Date:</span>
+                <span className="text-gray-900">
+                  {selectedExpense.date ? new Date(selectedExpense.date).toLocaleDateString() : "-"}
+                </span>
               </div>
-              <div>
-                <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Status</p>
-                <span className={`inline-block mt-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                  selectedExpense.status === "PAID" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"
-                }`}>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Payment Method:</span>
+                <span className="uppercase text-gray-900">{selectedExpense.payment_method}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Status:</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedExpense.status === "PAID"
+                      ? "bg-green-100 text-green-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
                   {selectedExpense.status}
                 </span>
               </div>
+              {selectedExpense.vendor && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Vendor:</span>
+                  <span className="text-gray-900">{selectedExpense.vendor}</span>
+                </div>
+              )}
+              {selectedExpense.reference && (
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Reference:</span>
+                  <span className="text-gray-900">{selectedExpense.reference}</span>
+                </div>
+              )}
               {selectedExpense.description && (
-                <div>
-                  <p className="text-[10px] sm:text-xs text-gray-500 uppercase font-semibold">Description</p>
-                  <p className="text-gray-700 bg-gray-50 p-2 rounded border mt-1">{selectedExpense.description}</p>
+                <div className="border-t pt-2 mt-2">
+                  <span className="text-gray-500 block mb-1">Description:</span>
+                  <p className="text-gray-700 bg-gray-50 p-2 rounded text-xs">{selectedExpense.description}</p>
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-2 border-t pt-3">
+
+            <div className="flex justify-end gap-2 pt-3 border-t">
               <button
                 onClick={() => handleDeleteExpense(selectedExpense.id)}
-                className="rounded-md border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+                className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
               >
                 Delete
               </button>
               <button
                 onClick={() => handleOpenEditExpense(selectedExpense)}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
               >
                 Edit
               </button>
