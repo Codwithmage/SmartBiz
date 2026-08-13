@@ -2,7 +2,7 @@
   "name": "SmartBiz",
   "short_name": "SmartBiz",
   "start_url": "/",
-  "display": "fullscreen",
+  "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
   "icons": [
