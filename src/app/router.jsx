@@ -16,7 +16,7 @@ import AddCategoryPage from "../features/categories/pages/AddCategoryPage";
 import InventoryOverview from "../features/inventory/pages/InventoryOverview";
 
 // Context Providers
-import { CategoryProvider } from "../context/CategoryContext"; // <-- Adjust path if stored in context or features
+import { CategoryProvider } from "../context/CategoryContext";
 
 // Sales & Expenses
 import SalesPage from "../features/sales/pages/SalesPage";
@@ -25,24 +25,18 @@ import ExpensesPage from "../features/expenses/pages/ExpensesPage";
 // Reports
 import ReportsPage from "../features/reports/pages/ReportsPage";
 
+// Settings (NEW)
+import SettingsPage from "../features/settings/SettingsPage";
+
 // Guards & Layout
 import ProtectedRoute from "../components/guards/ProtectedRoute";
 import AppLayout from "../components/layout/AppLayout";
 
 const router = createBrowserRouter([
   // Public Auth Routes
-  {
-    path: "/",
-    element: <Login />,
-  },
-  {
-    path: "/register",
-    element: <Register />,
-  },
-  {
-    path: "/forgot-password",
-    element: <ForgotPassword />,
-  },
+  { path: "/", element: <Login /> },
+  { path: "/register", element: <Register /> },
+  { path: "/forgot-password", element: <ForgotPassword /> },
 
   // Onboarding & Entry Routes
   {
@@ -62,7 +56,7 @@ const router = createBrowserRouter([
     ),
   },
 
-  // Main Dashboard Routes (Requires Business + Uses AppLayout + CategoryProvider)
+  // Main Dashboard Routes
   {
     element: (
       <ProtectedRoute>
@@ -72,50 +66,21 @@ const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
-      {
-        path: "/dashboard",
-        element: <Dashboard />,
-      },
-      {
-        path: "/inventory/products",
-        element: <InventoryProducts />,
-      },
-      {
-        path: "/inventory/add",
-        element: <AddProduct />,
-      },
-      {
-        path: "/inventory/categories",
-        element: <CategoriesPage />,
-      },
-      {
-        path: "/inventory/categories/new",
-        element: <AddCategoryPage />,
-      },
-      {
-        path: "/inventory",
-        element: <InventoryOverview />,
-      },
-      {
-        path: "/sales",
-        element: <SalesPage />,
-      },
-      {
-        path: "/expenses",
-        element: <ExpensesPage />,
-      },
-      {
-        path: "/reports",
-        element: <ReportsPage />,
-      },
+      { path: "/dashboard", element: <Dashboard /> },
+      { path: "/inventory/products", element: <InventoryProducts /> },
+      { path: "/inventory/add", element: <AddProduct /> },
+      { path: "/inventory/categories", element: <CategoriesPage /> },
+      { path: "/inventory/categories/new", element: <AddCategoryPage /> },
+      { path: "/inventory", element: <InventoryOverview /> },
+      { path: "/sales", element: <SalesPage /> },
+      { path: "/expenses", element: <ExpensesPage /> },
+      { path: "/reports", element: <ReportsPage /> },
+      { path: "/settings", element: <SettingsPage /> }, // <-- ADDED HERE
     ],
   },
 
   // Fallback Route
-  {
-    path: "*",
-    element: <Login />,
-  },
+  { path: "*", element: <Login /> },
 ]);
 
 export default router;

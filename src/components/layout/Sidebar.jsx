@@ -14,23 +14,13 @@ function Sidebar({ menuOpen, setMenuOpen }) {
         className={`
           fixed left-0 top-0 z-20 h-full w-64 bg-white p-5 shadow
           transform transition-transform duration-300
-          ${
-            menuOpen
-              ? "translate-x-0"
-              : "-translate-x-full"
-          }
+          ${menuOpen ? "translate-x-0" : "-translate-x-full"}
           md:static md:min-h-screen md:translate-x-0
         `}
       >
         <div className="mb-8 flex items-center justify-between md:hidden">
-          <h2 className="text-xl font-bold text-blue-600">
-            Menu
-          </h2>
-
-          <button
-            onClick={closeMobileMenu}
-            className="text-xl"
-          >
+          <h2 className="text-xl font-bold text-blue-600">Menu</h2>
+          <button onClick={closeMobileMenu} className="text-xl">
             ✕
           </button>
         </div>
@@ -44,21 +34,14 @@ function Sidebar({ menuOpen, setMenuOpen }) {
             Dashboard
           </Link>
 
-          {/* Inventory */}
+          {/* Inventory Dropdown */}
           <div>
             <button
-              onClick={() =>
-                setInventoryOpen(!inventoryOpen)
-              }
+              onClick={() => setInventoryOpen(!inventoryOpen)}
               className="flex w-full items-center justify-between text-gray-700 hover:text-blue-600"
             >
-              <span>
-                Inventory
-              </span>
-
-              <span>
-                {inventoryOpen ? "▲" : "▼"}
-              </span>
+              <span>Inventory</span>
+              <span>{inventoryOpen ? "▲" : "▼"}</span>
             </button>
 
             {inventoryOpen && (
@@ -106,13 +89,21 @@ function Sidebar({ menuOpen, setMenuOpen }) {
             Expenses
           </Link>
 
-          {/* Reports Link Added */}
           <Link
             to="/reports"
             onClick={closeMobileMenu}
             className="block text-gray-700 hover:text-blue-600"
           >
             Reports
+          </Link>
+
+          {/* Settings Link Added */}
+          <Link
+            to="/settings"
+            onClick={closeMobileMenu}
+            className="block text-gray-700 hover:text-blue-600 font-medium pt-2 border-t"
+          >
+            Settings
           </Link>
         </nav>
       </aside>
