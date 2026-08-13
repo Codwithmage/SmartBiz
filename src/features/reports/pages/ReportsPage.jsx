@@ -4,12 +4,14 @@ import { useBusiness } from "../../../context/BusinessContext";
 import { fetchReportData } from "../services/reportsService";
 import { exportToCSV } from "../utils/exportUtils";
 import { getDateRangePreset } from "../utils/dateUtils";
+import InventoryAnalytics from "../components/InventoryAnalytics";
 
 const REPORT_TABS = [
   { id: "sales", label: "Sales Report" },
   { id: "expenses", label: "Expense Report" },
   { id: "profit", label: "Profit & Loss" },
   { id: "inventory", label: "Inventory Valuation" },
+  { id: "analytics", label: "Inventory Health" }, // New Analytics Tab
 ];
 
 export default function ReportsPage() {
@@ -26,12 +28,12 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(false);
 
   const loadData = useCallback(async () => {
-    if (!business?.id) return;
+    if (!business?.id || activeTab === "analytics") return; // Analytics tab loads its own data
     setLoading(true);
 
     const { data, summary: pnlSummary, error } = await fetchReportData({
       businessId: business.id,
-      currency: business.currency || "NGN", // Passes business's registered currency
+      currency: business.currency || "NGN",
       reportType: activeTab,
       startDate,
       endDate,
@@ -72,13 +74,16 @@ export default function ReportsPage() {
           <p className="text-sm text-gray-500">Track and export business performance metrics.</p>
         </div>
 
-        <button
-          onClick={handleExport}
-          disabled={!reportData.length || loading}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold rounded-lg shadow transition text-sm flex items-center justify-center gap-2"
-        >
-          📥 Export CSV
-        </button>
+        {/* Hide Export button on the Analytics tab */}
+        {activeTab !== "analytics" && (
+          <button
+            onClick={handleExport}
+            disabled={!reportData.length || loading}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold rounded-lg shadow transition text-sm flex items-center justify-center gap-2"
+          >
+            📥 Export CSV
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -98,75 +103,81 @@ export default function ReportsPage() {
         ))}
       </div>
 
-      {/* Filters Bar */}
-      <div className="bg-white p-4 rounded-xl border border-gray-200 flex flex-wrap items-center gap-4 text-sm">
-        <div className="flex items-center gap-2">
-          <label className="font-semibold text-gray-700">Date Range:</label>
-          <select
-            value={preset}
-            onChange={handlePresetChange}
-            className="border border-gray-300 rounded-lg p-2 bg-white focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="today">Today</option>
-            <option value="this_week">This Week</option>
-            <option value="this_month">This Month</option>
-            <option value="this_year">This Year</option>
-            <option value="custom">Custom Range</option>
-          </select>
-        </div>
-
-        {preset === "custom" && (
+      {/* Filters Bar (Only visible for table reports) */}
+      {activeTab !== "analytics" && (
+        <div className="bg-white p-4 rounded-xl border border-gray-200 flex flex-wrap items-center gap-4 text-sm">
           <div className="flex items-center gap-2">
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className="border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-            />
-            <span className="text-gray-400">to</span>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className="border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
-            />
+            <label className="font-semibold text-gray-700">Date Range:</label>
+            <select
+              value={preset}
+              onChange={handlePresetChange}
+              className="border border-gray-300 rounded-lg p-2 bg-white focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="today">Today</option>
+              <option value="this_week">This Week</option>
+              <option value="this_month">This Month</option>
+              <option value="this_year">This Year</option>
+              <option value="custom">Custom Range</option>
+            </select>
           </div>
-        )}
-      </div>
 
-      {/* Data Table */}
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        {loading ? (
-          <div className="p-12 text-center text-gray-500">Loading report data...</div>
-        ) : reportData.length === 0 ? (
-          <div className="p-12 text-center text-gray-500">No records found for the selected period.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 font-medium uppercase text-xs">
-                <tr>
-                  {Object.keys(reportData[0]).map((key) => (
-                    <th key={key} className="px-6 py-3">
-                      {key.replace("_", " ")}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {reportData.map((row, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50">
-                    {Object.values(row).map((val, i) => (
-                      <td key={i} className="px-6 py-4 text-gray-700 whitespace-nowrap">
-                        {typeof val === "number" ? val.toLocaleString() : String(val)}
-                      </td>
+          {preset === "custom" && (
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-gray-400">to</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab Content Rendering */}
+      {activeTab === "analytics" ? (
+        <InventoryAnalytics />
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          {loading ? (
+            <div className="p-12 text-center text-gray-500">Loading report data...</div>
+          ) : reportData.length === 0 ? (
+            <div className="p-12 text-center text-gray-500">No records found for the selected period.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 font-medium uppercase text-xs">
+                  <tr>
+                    {Object.keys(reportData[0]).map((key) => (
+                      <th key={key} className="px-6 py-3">
+                        {key.replace("_", " ")}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {reportData.map((row, idx) => (
+                    <tr key={idx} className="hover:bg-gray-50">
+                      {Object.values(row).map((val, i) => (
+                        <td key={i} className="px-6 py-4 text-gray-700 whitespace-nowrap">
+                          {typeof val === "number" ? val.toLocaleString() : String(val)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
