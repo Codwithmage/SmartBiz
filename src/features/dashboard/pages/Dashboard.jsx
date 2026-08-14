@@ -9,6 +9,7 @@ export default function Dashboard() {
 
   // Raw state from database
   const [sales, setSales] = useState([]);
+  const [services, setServices] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [products, setProducts] = useState([]);
 
@@ -39,26 +40,31 @@ export default function Dashboard() {
 
       // 3. Clean flat queries
       let salesQuery = supabase.from("sales").select("*");
+      let servicesQuery = supabase.from("services").select("*");
       let expensesQuery = supabase.from("expenses").select("*");
       let productsQuery = supabase.from("products").select("*");
 
       if (businessId) {
         salesQuery = salesQuery.eq("business_id", businessId);
+        servicesQuery = servicesQuery.eq("business_id", businessId);
         expensesQuery = expensesQuery.eq("business_id", businessId);
         productsQuery = productsQuery.eq("business_id", businessId);
       }
 
-      const [salesRes, expensesRes, productsRes] = await Promise.all([
+      const [salesRes, servicesRes, expensesRes, productsRes] = await Promise.all([
         salesQuery.order("created_at", { ascending: false }),
+        servicesQuery.order("created_at", { ascending: false }),
         expensesQuery,
         productsQuery,
       ]);
 
       if (salesRes.error) console.error("Sales fetch error:", salesRes.error.message);
+      if (servicesRes.error) console.error("Services fetch error:", servicesRes.error.message);
       if (expensesRes.error) console.error("Expenses fetch error:", expensesRes.error.message);
       if (productsRes.error) console.error("Products fetch error:", productsRes.error.message);
 
       setSales(salesRes.data || []);
+      setServices(servicesRes.data || []);
       setExpenses(expensesRes.data || []);
       setProducts(productsRes.data || []);
     } catch (err) {
@@ -98,6 +104,7 @@ export default function Dashboard() {
     const channel = supabase
       .channel("realtime-dashboard-v2")
       .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, () => fetchDashboardData())
+      .on("postgres_changes", { event: "*", schema: "public", table: "services" }, () => fetchDashboardData())
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses" }, () => fetchDashboardData())
       .on("postgres_changes", { event: "*", schema: "public", table: "products" }, () => fetchDashboardData())
       .subscribe();
@@ -142,21 +149,31 @@ export default function Dashboard() {
     };
 
     const filteredSales = sales.filter((s) => isWithinTimeframe(s.created_at || s.date));
+    const filteredServices = services.filter((s) => isWithinTimeframe(s.created_at || s.date));
     const filteredExpenses = expenses.filter((e) => isWithinTimeframe(e.created_at || e.date));
 
-    // 1. Total Revenue
-    const totalSales = filteredSales.reduce(
+    // 1. Product Sales Revenue
+    const totalProductSales = filteredSales.reduce(
       (acc, sale) => acc + Number(sale.amount || sale.total_amount || sale.unit_price || 0),
       0
     );
 
-    // 2. Total Expenses
+    // 2. Service Revenue
+    const totalServicesRevenue = filteredServices.reduce(
+      (acc, service) => acc + Number(service.price || service.amount || service.total_amount || 0),
+      0
+    );
+
+    // Total Revenue (Products + Services)
+    const totalSales = totalProductSales + totalServicesRevenue;
+
+    // 3. Total Expenses
     const totalExpenses = filteredExpenses.reduce(
       (acc, expense) => acc + Number(expense.amount || 0),
       0
     );
 
-    // 3. Gross Product Profit
+    // 4. Gross Product Profit
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
       const product = productMap.get(sale.product_id);
       const qty = Number(sale.quantity || 1);
@@ -167,10 +184,18 @@ export default function Dashboard() {
       return acc + margin;
     }, 0);
 
-    const netProfit = grossProductProfit - totalExpenses;
+    // 5. Net Service Profit (Service Revenue minus any direct service cost if applicable)
+    const netServiceProfit = filteredServices.reduce((acc, service) => {
+      const price = Number(service.price || service.amount || service.total_amount || 0);
+      const cost = Number(service.cost || service.cost_price || 0);
+      return acc + (price - cost);
+    }, 0);
 
-    return { totalSales, totalExpenses, netProfit };
-  }, [sales, expenses, timeframe, productMap]);
+    // 6. Net Profit = (Product Profit + Service Profit) - Expenses
+    const netProfit = (grossProductProfit + netServiceProfit) - totalExpenses;
+
+    return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, netProfit };
+  }, [sales, services, expenses, timeframe, productMap]);
 
   // Low Stock Items (Quantity <= 5)
   const lowStockProducts = useMemo(() => {
@@ -283,11 +308,14 @@ export default function Dashboard() {
         <div className="rounded-xl border bg-white p-5 shadow-sm flex flex-col justify-between">
           <div className="flex items-center gap-2">
             <span className="text-2xl">💰</span>
-            <span className="text-xs font-semibold text-gray-500 uppercase">Sales ({timeframe})</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase">Total Revenue ({timeframe})</span>
           </div>
           <p className="mt-4 text-2xl font-bold text-gray-900">
             {currencySymbol}{metrics.totalSales.toLocaleString()}
           </p>
+          <span className="text-[10px] text-gray-400 mt-1">
+            Products: {currencySymbol}{metrics.totalProductSales.toLocaleString()} • Services: {currencySymbol}{metrics.totalServicesRevenue.toLocaleString()}
+          </span>
         </div>
 
         <div className="rounded-xl border bg-white p-5 shadow-sm flex flex-col justify-between">
@@ -313,11 +341,14 @@ export default function Dashboard() {
         <div className="rounded-xl border bg-white p-5 shadow-sm flex flex-col justify-between">
           <div className="flex items-center gap-2">
             <span className="text-2xl">📦</span>
-            <span className="text-xs font-semibold text-gray-500 uppercase">Products</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase">Inventory & Services</span>
           </div>
           <p className="mt-4 text-2xl font-bold text-blue-600">
-            {products.length.toLocaleString()}
+            {products.length.toLocaleString()} <span className="text-xs font-normal text-gray-500">Products</span>
           </p>
+          <span className="text-[10px] text-gray-400 mt-1">
+            Active services: {services.length}
+          </span>
         </div>
       </div>
 
