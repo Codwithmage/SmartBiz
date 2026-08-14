@@ -12,6 +12,10 @@ export default function Dashboard() {
   const [expenses, setExpenses] = useState([]);
   const [products, setProducts] = useState([]);
 
+  // End-of-Day Summary State
+  const [dailySummary, setDailySummary] = useState(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+
   // Fetch all realtime data
   const fetchDashboardData = async () => {
     try {
@@ -33,7 +37,7 @@ export default function Dashboard() {
 
       const businessId = business?.id;
 
-      // 3. Clean flat queries (No fragile relational string joins)
+      // 3. Clean flat queries
       let salesQuery = supabase.from("sales").select("*");
       let expensesQuery = supabase.from("expenses").select("*");
       let productsQuery = supabase.from("products").select("*");
@@ -65,6 +69,28 @@ export default function Dashboard() {
     }
   };
 
+  // Step 3 Integration: Call get_daily_business_summary SQL function
+  const handleFetchDailySummary = async () => {
+    if (!businessInfo?.id) return;
+    setLoadingSummary(true);
+
+    try {
+      const { data, error } = await supabase.rpc("get_daily_business_summary", {
+        p_business_id: businessInfo.id,
+      });
+
+      if (error) throw error;
+      if (data && data.length > 0) {
+        setDailySummary(data[0]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch daily summary:", err.message);
+      alert(`Summary Error: ${err.message}. Make sure Step 3 SQL function is executed in Supabase.`);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
   useEffect(() => {
     fetchDashboardData();
 
@@ -81,7 +107,14 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Quick lookup map for product details (cost_price, name, etc.)
+  // Auto-fetch daily summary once businessInfo is available
+  useEffect(() => {
+    if (businessInfo?.id) {
+      handleFetchDailySummary();
+    }
+  }, [businessInfo?.id]);
+
+  // Quick lookup map for product details
   const productMap = useMemo(() => {
     const map = new Map();
     products.forEach((p) => map.set(p.id, p));
@@ -123,7 +156,7 @@ export default function Dashboard() {
       0
     );
 
-    // 3. Gross Product Profit = (Sale Amount - Cost Price) - Expenses
+    // 3. Gross Product Profit
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
       const product = productMap.get(sale.product_id);
       const qty = Number(sale.quantity || 1);
@@ -167,7 +200,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Header & Timeframe Switcher */}
+      {/* Header & Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-xl border bg-white p-5 shadow-sm">
         <div>
           <h2 className="text-lg font-bold text-gray-900">{businessInfo?.name || "Dashboard"}</h2>
@@ -176,22 +209,74 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="inline-flex rounded-lg bg-gray-100 p-1 border self-start sm:self-auto">
-          {["daily", "weekly", "monthly"].map((type) => (
-            <button
-              key={type}
-              onClick={() => setTimeframe(type)}
-              className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-all ${
-                timeframe === type
-                  ? "bg-white text-gray-900 shadow-sm"
-                  : "text-gray-500 hover:text-gray-900"
-              }`}
-            >
-              {type}
-            </button>
-          ))}
+        <div className="flex items-center gap-3 self-start sm:self-auto">
+          <button
+            onClick={handleFetchDailySummary}
+            disabled={loadingSummary}
+            className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-100 border border-blue-200 transition disabled:opacity-50"
+          >
+            {loadingSummary ? "Calculating..." : "📊 Run EOD Summary"}
+          </button>
+
+          <div className="inline-flex rounded-lg bg-gray-100 p-1 border">
+            {["daily", "weekly", "monthly"].map((type) => (
+              <button
+                key={type}
+                onClick={() => setTimeframe(type)}
+                className={`px-3 py-1.5 text-xs font-semibold capitalize rounded-md transition-all ${
+                  timeframe === type
+                    ? "bg-white text-gray-900 shadow-sm"
+                    : "text-gray-500 hover:text-gray-900"
+                }`}
+              >
+                {type}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* Step 3 Banner: End of Day Summary Display */}
+      {dailySummary && (
+        <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
+          <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+            <h3 className="font-bold text-sm text-blue-400 flex items-center gap-2">
+              <span>🔔</span> End-of-Day Performance Digest
+            </h3>
+            <span className="text-xs text-slate-400">Generated Today</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+            <div>
+              <p className="text-slate-400">Revenue</p>
+              <p className="text-base font-bold text-white mt-1">
+                {currencySymbol}{Number(dailySummary.total_revenue || 0).toLocaleString()}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">Net Profit</p>
+              <p className={`text-base font-bold mt-1 ${Number(dailySummary.net_profit || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {currencySymbol}{Number(dailySummary.net_profit || 0).toLocaleString()}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">Top Item Sold</p>
+              <p className="text-base font-bold text-amber-300 mt-1 truncate">
+                {dailySummary.top_item_name} ({dailySummary.top_item_qty})
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">New Debts</p>
+              <p className="text-base font-bold text-rose-300 mt-1">
+                {currencySymbol}{Number(dailySummary.new_debts || 0).toLocaleString()}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Realtime Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

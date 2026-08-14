@@ -1,0 +1,6 @@
+{
+  "appId": "com.yourcompany.smartbizz",
+  "appName": "Smart Bizz",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}
