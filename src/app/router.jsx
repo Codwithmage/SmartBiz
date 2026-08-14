@@ -8,12 +8,13 @@ import Dashboard from "../features/dashboard/pages/Dashboard";
 import CreateBusiness from "../features/business/pages/CreateBusiness";
 import AppEntry from "../features/app/pages/AppEntry";
 
-// Inventory & Categories
+// Inventory, Services & Categories
+import InventoryOverview from "../features/inventory/pages/InventoryOverview";
 import InventoryProducts from "../features/inventory/pages/InventoryProducts";
+import ServicesPage from "../features/inventory/pages/ServicesPage"; // <-- ADDED
 import AddProduct from "../features/inventory/pages/AddProduct";
 import CategoriesPage from "../features/categories/pages/CategoriesPage";
 import AddCategoryPage from "../features/categories/pages/AddCategoryPage";
-import InventoryOverview from "../features/inventory/pages/InventoryOverview";
 
 // Context Providers
 import { CategoryProvider } from "../context/CategoryContext";
@@ -25,7 +26,7 @@ import ExpensesPage from "../features/expenses/pages/ExpensesPage";
 // Reports
 import ReportsPage from "../features/reports/pages/ReportsPage";
 
-// Settings (NEW)
+// Settings
 import SettingsPage from "../features/settings/SettingsPage";
 
 // Guards & Layout
@@ -67,15 +68,20 @@ const router = createBrowserRouter([
     ),
     children: [
       { path: "/dashboard", element: <Dashboard /> },
+      
+      // Inventory & Services Sub-routes
+      { path: "/inventory", element: <InventoryOverview /> },
       { path: "/inventory/products", element: <InventoryProducts /> },
+      { path: "/inventory/services", element: <ServicesPage /> }, // <-- ADDED
       { path: "/inventory/add", element: <AddProduct /> },
       { path: "/inventory/categories", element: <CategoriesPage /> },
       { path: "/inventory/categories/new", element: <AddCategoryPage /> },
-      { path: "/inventory", element: <InventoryOverview /> },
+
+      // Sales, Expenses & Reports
       { path: "/sales", element: <SalesPage /> },
       { path: "/expenses", element: <ExpensesPage /> },
       { path: "/reports", element: <ReportsPage /> },
-      { path: "/settings", element: <SettingsPage /> }, // <-- ADDED HERE
+      { path: "/settings", element: <SettingsPage /> },
     ],
   },
 

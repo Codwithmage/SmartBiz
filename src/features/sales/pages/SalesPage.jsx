@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useSales } from "../context/SalesContext";
 import { useInventory } from "../../inventory/context/InventoryContext";
+import { useServices } from "../../services/context/ServicesContext";
 import { useBusiness } from "../../../context/BusinessContext";
 import { formatCurrency } from "../../../utils/currencyUtils";
 
@@ -19,9 +20,10 @@ const isToday = (dateString) => {
 function SalesPage() {
   const { business } = useBusiness();
   const currency = business?.currency || "NGN";
-  
+
   const { sales, loadingSales, loadSales, addSale } = useSales();
   const { products, loadProducts } = useInventory();
+  const { services, loadServices } = useServices();
 
   const businessId = business?.id;
 
@@ -32,6 +34,7 @@ function SalesPage() {
 
   const [customerName, setCustomerName] = useState("");
   const [productQuery, setProductQuery] = useState("");
+  const [itemTypeFilter, setItemTypeFilter] = useState("ALL"); // ALL, PRODUCT, SERVICE
   const [cart, setCart] = useState([]);
   const [discountPercent, setDiscountPercent] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState("CASH");
@@ -42,16 +45,17 @@ function SalesPage() {
     if (businessId) {
       loadSales(businessId);
       loadProducts(businessId);
+      if (loadServices) loadServices(businessId);
     }
-  }, [businessId, loadSales, loadProducts]);
+  }, [businessId, loadSales, loadProducts, loadServices]);
 
   const overviewStats = useMemo(() => {
     let todaysSales = 0;
     let totalSales = 0;
-    let totalTransactions = sales.length;
+    let totalTransactions = (sales || []).length;
     let outstandingSales = 0;
 
-    sales.forEach((s) => {
+    (sales || []).forEach((s) => {
       const amount = parseFloat(s.total_amount || 0);
       totalSales += amount;
 
@@ -73,34 +77,68 @@ function SalesPage() {
     };
   }, [sales]);
 
-  const filteredProducts = useMemo(() => {
-    if (!productQuery.trim()) return [];
-    return products.filter((p) =>
-      p.name.toLowerCase().includes(productQuery.toLowerCase())
-    );
-  }, [products, productQuery]);
+  // Merge Products and Services into a single catalog
+  const unifiedCatalog = useMemo(() => {
+    const productList = (products || []).map((p) => ({
+      id: p.id,
+      name: p.name,
+      selling_price: Number(p.selling_price || 0),
+      type: "PRODUCT",
+      availableStock: Number(p.quantity ?? p.initial_quantity ?? Infinity),
+    }));
 
-  const handleAddToCart = (product) => {
-    const availableStock = Number(
-      product.quantity ?? product.initial_quantity ?? Infinity
-    );
+    const serviceList = (services || []).map((s) => ({
+      id: s.id,
+      name: s.name,
+      selling_price: Number(s.price || s.selling_price || 0),
+      type: "SERVICE",
+      availableStock: Infinity, // Services do not have inventory limits
+    }));
+
+    return [...productList, ...serviceList];
+  }, [products, services]);
+
+  const filteredCatalog = useMemo(() => {
+    if (!productQuery.trim()) return [];
+    const query = productQuery.toLowerCase();
+
+    return unifiedCatalog.filter((item) => {
+      const matchesQuery = item.name.toLowerCase().includes(query);
+      const matchesType = itemTypeFilter === "ALL" || item.type === itemTypeFilter;
+      return matchesQuery && matchesType;
+    });
+  }, [unifiedCatalog, productQuery, itemTypeFilter]);
+
+  const handleAddToCart = (item) => {
+    const isService = item.type === "SERVICE";
+    const availableStock = item.availableStock;
 
     setCart((prev) => {
-      const existing = prev.find((item) => item.product_id === product.id);
+      const existing = prev.find(
+        (cartItem) => cartItem.id === item.id && cartItem.item_type === item.type
+      );
+
       if (existing) {
-        const nextQty = Math.min(existing.quantity + 1, availableStock);
-        return prev.map((item) =>
-          item.product_id === product.id
-            ? { ...item, quantity: nextQty }
-            : item
+        const nextQty = isService
+          ? existing.quantity + 1
+          : Math.min(existing.quantity + 1, availableStock);
+
+        return prev.map((cartItem) =>
+          cartItem.id === item.id && cartItem.item_type === item.type
+            ? { ...cartItem, quantity: nextQty }
+            : cartItem
         );
       }
+
       return [
         ...prev,
         {
-          product_id: product.id,
-          product_name: product.name,
-          unit_price: Number(product.selling_price || 0),
+          id: item.id,
+          product_id: !isService ? item.id : null,
+          service_id: isService ? item.id : null,
+          item_type: item.type,
+          product_name: item.name,
+          unit_price: item.selling_price,
           quantity: 1,
           stock: availableStock,
         },
@@ -109,17 +147,27 @@ function SalesPage() {
     setProductQuery("");
   };
 
-  const handleUpdateQuantity = (productId, newQuantity) => {
+  // Helper function to explicitly remove an item from the cart
+  const handleRemoveFromCart = (id, itemType) => {
+    setCart((prev) =>
+      prev.filter((item) => !(item.id === id && item.item_type === itemType))
+    );
+  };
+
+  const handleUpdateQuantity = (id, itemType, newQuantity) => {
     if (newQuantity <= 0) {
-      setCart((prev) => prev.filter((item) => item.product_id !== productId));
+      handleRemoveFromCart(id, itemType);
       return;
     }
 
     setCart((prev) =>
       prev.map((item) => {
-        if (item.product_id === productId) {
+        if (item.id === id && item.item_type === itemType) {
           const availableStock = item.stock ?? Infinity;
-          const targetQty = Math.min(newQuantity, availableStock);
+          const targetQty =
+            item.item_type === "SERVICE"
+              ? newQuantity
+              : Math.min(newQuantity, availableStock);
           return { ...item, quantity: targetQty };
         }
         return item;
@@ -131,7 +179,9 @@ function SalesPage() {
     (sum, item) => sum + item.unit_price * item.quantity,
     0
   );
-  const discountAmount = (cartSubtotal * Number(discountPercent)) / 100;
+  
+  const parsedDiscount = parseFloat(discountPercent) || 0;
+  const discountAmount = (cartSubtotal * parsedDiscount) / 100;
   const cartTotal = Math.max(0, cartSubtotal - discountAmount);
 
   const handleCompleteSale = async (e) => {
@@ -148,7 +198,15 @@ function SalesPage() {
       payment_method: paymentMethod,
       payment_status: paymentStatus,
       status: "COMPLETED",
-      items: cart,
+      items: cart.map((item) => ({
+        product_id: item.product_id,
+        service_id: item.service_id,
+        item_type: item.item_type,
+        product_name: item.product_name,
+        unit_price: item.unit_price,
+        quantity: item.quantity,
+        total_price: item.unit_price * item.quantity,
+      })),
     };
 
     const { error } = await addSale(salePayload);
@@ -160,7 +218,9 @@ function SalesPage() {
     }
 
     if (businessId) {
-      await Promise.all([loadSales(businessId), loadProducts(businessId)]);
+      const refreshes = [loadSales(businessId), loadProducts(businessId)];
+      if (loadServices) refreshes.push(loadServices(businessId));
+      await Promise.all(refreshes);
     }
 
     setIsSubmitting(false);
@@ -171,7 +231,7 @@ function SalesPage() {
   };
 
   const filteredSalesHistory = useMemo(() => {
-    return sales.filter((sale) => {
+    return (sales || []).filter((sale) => {
       const matchesSearch =
         sale.receipt_number?.toLowerCase().includes(historySearch.toLowerCase()) ||
         sale.customer_name?.toLowerCase().includes(historySearch.toLowerCase());
@@ -189,7 +249,7 @@ function SalesPage() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sales</h1>
           <p className="text-xs sm:text-sm text-gray-500">
-            Track revenue, view transaction history, and process new sales.
+            Track revenue, view transaction history, and process sales for products & services.
           </p>
         </div>
 
@@ -357,31 +417,66 @@ function SalesPage() {
       {activeTab === "NEW_SALE" && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2 space-y-4 rounded-xl border bg-white p-4 sm:p-5 shadow-sm">
-            <h2 className="text-base sm:text-lg font-bold text-gray-900">Product Search</h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h2 className="text-base sm:text-lg font-bold text-gray-900">
+                Search Products & Services
+              </h2>
+              {/* Filter Tabs */}
+              <div className="flex rounded-md bg-gray-100 p-0.5 text-xs">
+                {["ALL", "PRODUCT", "SERVICE"].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setItemTypeFilter(type)}
+                    className={`px-2.5 py-1 font-medium rounded ${
+                      itemTypeFilter === type
+                        ? "bg-white text-gray-900 shadow-xs"
+                        : "text-gray-600 hover:text-gray-900"
+                    }`}
+                  >
+                    {type === "ALL" ? "All" : type === "PRODUCT" ? "Products" : "Services"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="relative">
               <input
                 type="text"
-                placeholder="Type product name..."
+                placeholder="Type item or service name..."
                 value={productQuery}
                 onChange={(e) => setProductQuery(e.target.value)}
                 className="w-full rounded-lg border p-3 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
-              {filteredProducts.length > 0 && (
+              {filteredCatalog.length > 0 && (
                 <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-y-auto rounded-lg border bg-white shadow-lg">
-                  {filteredProducts.map((p) => (
+                  {filteredCatalog.map((item) => (
                     <div
-                      key={p.id}
-                      onClick={() => handleAddToCart(p)}
+                      key={`${item.type}-${item.id}`}
+                      onClick={() => handleAddToCart(item)}
                       className="flex items-center justify-between p-3 hover:bg-gray-50 cursor-pointer border-b last:border-b-0"
                     >
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{p.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-gray-900">{item.name}</p>
+                          <span
+                            className={`px-1.5 py-0.5 text-[10px] font-semibold rounded ${
+                              item.type === "SERVICE"
+                                ? "bg-purple-100 text-purple-700"
+                                : "bg-blue-100 text-blue-700"
+                            }`}
+                          >
+                            {item.type}
+                          </span>
+                        </div>
                         <p className="text-xs text-gray-500">
-                          Stock: {p.quantity ?? p.initial_quantity ?? 0}
+                          {item.type === "PRODUCT"
+                            ? `Stock: ${item.availableStock}`
+                            : "Service Item"}
                         </p>
                       </div>
                       <span className="text-sm font-bold text-blue-600">
-                        {formatCurrency(p.selling_price, currency)}
+                        {formatCurrency(item.selling_price, currency)}
                       </span>
                     </div>
                   ))}
@@ -392,30 +487,50 @@ function SalesPage() {
             <h3 className="text-sm sm:text-base font-semibold text-gray-900 pt-2">Cart Items</h3>
             {cart.length === 0 ? (
               <p className="text-sm text-gray-500 py-8 text-center border rounded-lg border-dashed">
-                Cart is empty. Search for products above to add them.
+                Cart is empty. Search for products or services above to add them.
               </p>
             ) : (
               <div className="overflow-x-auto border rounded-lg">
                 <table className="w-full text-left text-sm min-w-[500px]">
                   <thead className="bg-gray-50 text-xs uppercase text-gray-600 border-b">
                     <tr>
-                      <th className="p-3">Product</th>
+                      <th className="p-3">Item</th>
                       <th className="p-3">Price</th>
                       <th className="p-3 text-center">Qty</th>
                       <th className="p-3 text-right">Total</th>
+                      <th className="p-3 text-center">Remove</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
                     {cart.map((item) => (
-                      <tr key={item.product_id}>
-                        <td className="p-3 font-medium text-gray-900">{item.product_name}</td>
-                        <td className="p-3 whitespace-nowrap">{formatCurrency(item.unit_price, currency)}</td>
+                      <tr key={`${item.item_type}-${item.id}`}>
+                        <td className="p-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-gray-900">{item.product_name}</span>
+                            <span
+                              className={`px-1.5 py-0.5 text-[9px] font-semibold rounded ${
+                                item.item_type === "SERVICE"
+                                  ? "bg-purple-100 text-purple-700"
+                                  : "bg-blue-100 text-blue-700"
+                              }`}
+                            >
+                              {item.item_type}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-3 whitespace-nowrap">
+                          {formatCurrency(item.unit_price, currency)}
+                        </td>
                         <td className="p-3 text-center">
                           <div className="flex items-center justify-center gap-1">
                             <button
                               type="button"
                               onClick={() =>
-                                handleUpdateQuantity(item.product_id, item.quantity - 1)
+                                handleUpdateQuantity(
+                                  item.id,
+                                  item.item_type,
+                                  item.quantity - 1
+                                )
                               }
                               className="flex h-7 w-7 items-center justify-center rounded border border-gray-300 bg-gray-100 text-sm font-bold text-gray-700 hover:bg-gray-200 active:scale-95 transition"
                             >
@@ -427,7 +542,8 @@ function SalesPage() {
                               value={item.quantity}
                               onChange={(e) =>
                                 handleUpdateQuantity(
-                                  item.product_id,
+                                  item.id,
+                                  item.item_type,
                                   parseInt(e.target.value) || 0
                                 )
                               }
@@ -436,7 +552,11 @@ function SalesPage() {
                             <button
                               type="button"
                               onClick={() =>
-                                handleUpdateQuantity(item.product_id, item.quantity + 1)
+                                handleUpdateQuantity(
+                                  item.id,
+                                  item.item_type,
+                                  item.quantity + 1
+                                )
                               }
                               className="flex h-7 w-7 items-center justify-center rounded border border-gray-300 bg-gray-100 text-sm font-bold text-gray-700 hover:bg-gray-200 active:scale-95 transition"
                             >
@@ -446,6 +566,16 @@ function SalesPage() {
                         </td>
                         <td className="p-3 text-right font-semibold whitespace-nowrap">
                           {formatCurrency(item.unit_price * item.quantity, currency)}
+                        </td>
+                        <td className="p-3 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFromCart(item.id, item.item_type)}
+                            className="text-red-500 hover:text-red-700 hover:bg-red-50 rounded p-1 transition"
+                            title="Remove item"
+                          >
+                            ✕
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -581,7 +711,8 @@ function SalesPage() {
               <table className="w-full text-left text-xs min-w-[300px]">
                 <thead className="bg-gray-50 border-b font-semibold">
                   <tr>
-                    <th className="p-2">Product</th>
+                    <th className="p-2">Item</th>
+                    <th className="p-2 text-center">Type</th>
                     <th className="p-2 text-center">Qty</th>
                     <th className="p-2 text-right">Total</th>
                   </tr>
@@ -590,6 +721,17 @@ function SalesPage() {
                   {selectedSale.sale_items?.map((item) => (
                     <tr key={item.id}>
                       <td className="p-2">{item.product_name}</td>
+                      <td className="p-2 text-center">
+                        <span
+                          className={`px-1.5 py-0.5 text-[9px] font-semibold rounded ${
+                            item.item_type === "SERVICE"
+                              ? "bg-purple-100 text-purple-700"
+                              : "bg-blue-100 text-blue-700"
+                          }`}
+                        >
+                          {item.item_type || "PRODUCT"}
+                        </span>
+                      </td>
                       <td className="p-2 text-center">{item.quantity}</td>
                       <td className="p-2 text-right font-medium">
                         {formatCurrency(item.total_price, currency)}

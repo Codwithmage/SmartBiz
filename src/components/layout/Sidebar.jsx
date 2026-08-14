@@ -97,6 +97,15 @@ function Sidebar({ menuOpen, setMenuOpen }) {
                   Products
                 </Link>
 
+                {/* UPDATED PATH HERE */}
+                <Link
+                  to="/inventory/services"
+                  onClick={closeMobileMenu}
+                  className="block text-gray-600 hover:text-blue-600 transition-colors"
+                >
+                  Services
+                </Link>
+
                 <Link
                   to="/inventory/categories"
                   onClick={closeMobileMenu}
