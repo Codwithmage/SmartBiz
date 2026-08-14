@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 // Import context object from .js file
 import { NotificationContext } from "./useNotification";
 // ⚠️ Ensure this path correctly points to your Supabase client
-import supabase from "../../../../supabase/supabaseClient";
+import supabase from "../../../supabase/SupabaseClient";
 
 export function NotificationProvider({ children }) {
   const [notification, setNotification] = useState(null);

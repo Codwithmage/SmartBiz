@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useCallback } from "react";
-import  supabase  from "../../../../supabase/supabaseClient"; // Adjust this path to your supabase client export
+import  supabase  from "../../../supabase/SupabaseClient"; // Adjust this path to your supabase client export
 
 const ServicesContext = createContext();
 
