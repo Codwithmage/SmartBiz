@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useServices } from "../../services/context/ServicesContext";
 import { useBusiness } from "../../../context/BusinessContext";
 import supabase from "../../../supabase/SupabaseClient";
@@ -12,10 +12,9 @@ function ServicesPage() {
     businessContext.business || 
     businessContext.activeBusiness;
 
-  const businessId = 
-    activeBusiness?.id || 
-    activeBusiness?._id || 
-    activeBusiness?.business_id;
+  const [businessId, setBusinessId] = useState(
+    activeBusiness?.id || activeBusiness?._id || activeBusiness?.business_id || null
+  );
 
   // Add Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -33,18 +32,48 @@ function ServicesPage() {
   // Delete State
   const [deletingId, setDeletingId] = useState(null);
 
-  useEffect(() => {
-    if (businessId && typeof loadServices === "function") {
-      loadServices(businessId);
+  // Fallback: Fetch business_id from profile if context is missing it for staff members
+  const resolveBusinessId = useCallback(async () => {
+    if (businessId) return businessId;
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("business_id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profile?.business_id) {
+        setBusinessId(profile.business_id);
+        return profile.business_id;
+      }
+    } catch (err) {
+      console.error("Error fetching user profile business_id:", err);
     }
-  }, [businessId, loadServices]);
+    return null;
+  }, [businessId]);
+
+  useEffect(() => {
+    async function initServices() {
+      const activeId = await resolveBusinessId();
+      if (activeId && typeof loadServices === "function") {
+        loadServices(activeId);
+      }
+    }
+    initServices();
+  }, [resolveBusinessId, loadServices]);
 
   // Create Service
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!businessId) {
-      setErrorMsg("No active business found. Please make sure you are logged in and a business is selected.");
+    const activeId = await resolveBusinessId();
+
+    if (!activeId) {
+      setErrorMsg("No active business found. Please make sure you are logged in.");
       return;
     }
 
@@ -60,7 +89,7 @@ function ServicesPage() {
       await addService({
         name,
         price: parseFloat(price),
-        businessId: businessId,
+        businessId: activeId,
       });
 
       setName("");
@@ -100,8 +129,9 @@ function ServicesPage() {
 
       alert("Service updated successfully!");
       setEditingService(null);
-      if (businessId && typeof loadServices === "function") {
-        loadServices(businessId);
+      const activeId = await resolveBusinessId();
+      if (activeId && typeof loadServices === "function") {
+        loadServices(activeId);
       }
     } catch (err) {
       alert(`Failed to update service: ${err.message}`);
@@ -121,14 +151,15 @@ function ServicesPage() {
       setDeletingId(service.id);
       const { error } = await supabase
         .from("services")
-        .update({ is_active: false }) // Soft Delete
+        .update({ is_active: false })
         .eq("id", service.id);
 
       if (error) throw error;
 
       alert(`Service "${service.name}" removed successfully.`);
-      if (businessId && typeof loadServices === "function") {
-        loadServices(businessId);
+      const activeId = await resolveBusinessId();
+      if (activeId && typeof loadServices === "function") {
+        loadServices(activeId);
       }
     } catch (err) {
       alert(`Failed to remove service: ${err.message}`);
@@ -151,19 +182,11 @@ function ServicesPage() {
             setErrorMsg("");
             setIsModalOpen(true);
           }}
-          disabled={!businessId}
           className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white px-4 py-2 rounded-lg font-medium transition-colors"
         >
           + Add Service
         </button>
       </div>
-
-      {!businessId && (
-        <div className="p-4 bg-yellow-50 border-l-4 border-yellow-400 text-yellow-800 rounded">
-          <p className="font-semibold">No Business Selected</p>
-          <p className="text-sm">Please select or create a business profile to view and manage services.</p>
-        </div>
-      )}
 
       {/* Services Table */}
       <div className="bg-white rounded-lg shadow overflow-hidden">

@@ -27,10 +27,8 @@ export async function getSales(businessId) {
  * Create a sale (inserts sale record and sale items)
  */
 export async function createSale(payload) {
-  // Destructure 'items' out so Supabase doesn't look for an 'items' column in 'sales'
   const { items, ...saleData } = payload;
 
-  // 1. Insert header record into 'sales'
   const { data: sale, error: saleError } = await supabase
     .from("sales")
     .insert([saleData])
@@ -39,7 +37,6 @@ export async function createSale(payload) {
 
   if (saleError) return { data: null, error: saleError };
 
-  // 2. Insert line items into 'sale_items'
   if (items && items.length > 0) {
     const saleItemsPayload = items.map((item) => ({
       sale_id: sale.id,
@@ -60,6 +57,21 @@ export async function createSale(payload) {
     }
   }
 
-  // Return the main sale object attached with its items array
   return { data: { ...sale, sale_items: items || [] }, error: null };
+}
+
+/**
+ * Update payment status and amount paid for an outstanding sale
+ */
+export async function updateSaleStatus(saleId, amountPaid, paymentStatus) {
+  const { data, error } = await supabase
+    .from("sales")
+    .update({
+      amount_paid: amountPaid,
+      payment_status: paymentStatus,
+    })
+    .eq("id", saleId)
+    .select();
+
+  return { data, error };
 }

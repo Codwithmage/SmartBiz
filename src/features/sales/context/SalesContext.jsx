@@ -1,5 +1,9 @@
 import { createContext, useContext, useState, useCallback } from "react";
-import { getSales, createSale as createSaleService } from "../services/saleService";
+import { 
+  getSales, 
+  createSale as createSaleService, 
+  updateSaleStatus as updateSaleStatusService 
+} from "../services/saleService";
 
 const SalesContext = createContext(null);
 
@@ -32,12 +36,31 @@ export function SalesProvider({ children }) {
     const { data, error } = await createSaleService(salePayload);
 
     if (!error && data) {
-      // Reload sales to fetch full row relationships seamlessly
       await loadSales(salePayload.business_id);
     }
 
     return { data, error };
   }, [loadSales]);
+
+  const updatePaymentStatus = useCallback(
+    async (saleId, amountPaid, newStatus = "paid", businessId) => {
+      const { data, error } = await updateSaleStatusService(saleId, amountPaid, newStatus);
+
+      if (!error) {
+        setSales((prevSales) =>
+          prevSales.map((sale) =>
+            sale.id === saleId
+              ? { ...sale, amount_paid: amountPaid, payment_status: newStatus }
+              : sale
+          )
+        );
+        if (businessId) await loadSales(businessId);
+      }
+
+      return { data, error };
+    },
+    [loadSales]
+  );
 
   return (
     <SalesContext.Provider
@@ -46,6 +69,7 @@ export function SalesProvider({ children }) {
         loadingSales,
         loadSales,
         addSale,
+        updatePaymentStatus,
       }}
     >
       {children}

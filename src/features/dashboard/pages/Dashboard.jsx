@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [businessInfo, setBusinessInfo] = useState(null);
-  const [timeframe, setTimeframe] = useState("monthly"); // "daily" | "weekly" | "monthly"
+  const [timeframe, setTimeframe] = useState("monthly");
 
   // Raw state from database
   const [sales, setSales] = useState([]);
@@ -17,66 +17,116 @@ export default function Dashboard() {
   const [dailySummary, setDailySummary] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
 
-  // Fetch all realtime data
-  const fetchDashboardData = async () => {
-    try {
-      setErrorMessage("");
+  // 1. Resolve Business Info ONCE when session is active
+  useEffect(() => {
+    let isMounted = true;
 
-      // 1. Get authenticated user
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error("User not authenticated");
+    const initAuthAndBusiness = async () => {
+      try {
+        setLoading(true);
+        
+        // Use getSession() instead of getUser() to wait for restored token
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError || !session?.user) {
+          if (isMounted) setLoading(false);
+          return;
+        }
 
-      // 2. Fetch business details
-      const { data: business, error: businessError } = await supabase
-        .from("businesses")
-        .select("*")
-        .eq("owner_id", user.id)
-        .maybeSingle();
+        const user = session.user;
 
-      if (businessError) throw businessError;
-      if (business) setBusinessInfo(business);
+        // Step A: Check if user is business owner
+        let { data: biz } = await supabase
+          .from("businesses")
+          .select("*")
+          .eq("owner_id", user.id)
+          .maybeSingle();
 
-      const businessId = business?.id;
+        // Step B: Check profile if staff
+        if (!biz) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("business_id")
+            .eq("id", user.id)
+            .maybeSingle();
 
-      // 3. Clean flat queries
-      let salesQuery = supabase.from("sales").select("*");
-      let servicesQuery = supabase.from("services").select("*");
-      let expensesQuery = supabase.from("expenses").select("*");
-      let productsQuery = supabase.from("products").select("*");
+          if (profile?.business_id) {
+            const { data: staffBiz } = await supabase
+              .from("businesses")
+              .select("*")
+              .eq("id", profile.business_id)
+              .maybeSingle();
+            biz = staffBiz;
+          }
+        }
 
-      if (businessId) {
-        salesQuery = salesQuery.eq("business_id", businessId);
-        servicesQuery = servicesQuery.eq("business_id", businessId);
-        expensesQuery = expensesQuery.eq("business_id", businessId);
-        productsQuery = productsQuery.eq("business_id", businessId);
+        if (isMounted && biz) {
+          setBusinessInfo(biz);
+        }
+      } catch (err) {
+        console.error("Dashboard initialization error:", err);
+        if (isMounted) setErrorMessage(err.message);
+      } finally {
+        if (isMounted) setLoading(false);
       }
+    };
 
+    initAuthAndBusiness();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Fetch table data for the specific business
+  const fetchDashboardData = useCallback(async (bizId) => {
+    if (!bizId) return;
+
+    try {
       const [salesRes, servicesRes, expensesRes, productsRes] = await Promise.all([
-        salesQuery.order("created_at", { ascending: false }),
-        servicesQuery.order("created_at", { ascending: false }),
-        expensesQuery,
-        productsQuery,
+        supabase.from("sales").select("*").eq("business_id", bizId).order("created_at", { ascending: false }),
+        supabase.from("services").select("*").eq("business_id", bizId).order("created_at", { ascending: false }),
+        supabase.from("expenses").select("*").eq("business_id", bizId),
+        supabase.from("products").select("*").eq("business_id", bizId),
       ]);
 
-      if (salesRes.error) console.error("Sales fetch error:", salesRes.error.message);
-      if (servicesRes.error) console.error("Services fetch error:", servicesRes.error.message);
-      if (expensesRes.error) console.error("Expenses fetch error:", expensesRes.error.message);
-      if (productsRes.error) console.error("Products fetch error:", productsRes.error.message);
+      if (salesRes.error) console.error("Sales error:", salesRes.error.message);
+      if (servicesRes.error) console.error("Services error:", servicesRes.error.message);
+      if (expensesRes.error) console.error("Expenses error:", expensesRes.error.message);
+      if (productsRes.error) console.error("Products error:", productsRes.error.message);
 
       setSales(salesRes.data || []);
       setServices(servicesRes.data || []);
       setExpenses(expensesRes.data || []);
       setProducts(productsRes.data || []);
     } catch (err) {
-      console.error("Dashboard error:", err);
-      setErrorMessage(err.message);
-    } finally {
-      setLoading(false);
+      console.error("Fetch data error:", err);
     }
-  };
+  }, []);
 
-  // Step 3 Integration: Call get_daily_business_summary SQL function
-  const handleFetchDailySummary = async () => {
+  // 3. Realtime Listener attached ONLY after businessInfo.id is resolved
+  useEffect(() => {
+    const bizId = businessInfo?.id;
+    if (!bizId) return;
+
+    fetchDashboardData(bizId);
+
+    // Channel specific to this business to prevent cross-tenant triggers
+    const channel = supabase
+      .channel(`realtime-dashboard-${bizId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "sales", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "services", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "products", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [businessInfo?.id, fetchDashboardData]);
+
+  // Fetch Daily Summary
+  const handleFetchDailySummary = useCallback(async () => {
     if (!businessInfo?.id) return;
     setLoadingSummary(true);
 
@@ -91,44 +141,25 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error("Failed to fetch daily summary:", err.message);
-      alert(`Summary Error: ${err.message}. Make sure Step 3 SQL function is executed in Supabase.`);
     } finally {
       setLoadingSummary(false);
     }
-  };
+  }, [businessInfo?.id]);
 
-  useEffect(() => {
-    fetchDashboardData();
-
-    // Realtime listeners for postgres changes
-    const channel = supabase
-      .channel("realtime-dashboard-v2")
-      .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, () => fetchDashboardData())
-      .on("postgres_changes", { event: "*", schema: "public", table: "services" }, () => fetchDashboardData())
-      .on("postgres_changes", { event: "*", schema: "public", table: "expenses" }, () => fetchDashboardData())
-      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, () => fetchDashboardData())
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  // Auto-fetch daily summary once businessInfo is available
   useEffect(() => {
     if (businessInfo?.id) {
       handleFetchDailySummary();
     }
-  }, [businessInfo?.id]);
+  }, [businessInfo?.id, handleFetchDailySummary]);
 
-  // Quick lookup map for product details
+  // Lookup map for products
   const productMap = useMemo(() => {
     const map = new Map();
     products.forEach((p) => map.set(p.id, p));
     return map;
   }, [products]);
 
-  // Calculate metrics based on selected Timeframe
+  // Metrics calculation
   const metrics = useMemo(() => {
     const now = new Date();
 
@@ -152,47 +183,39 @@ export default function Dashboard() {
     const filteredServices = services.filter((s) => isWithinTimeframe(s.created_at || s.date));
     const filteredExpenses = expenses.filter((e) => isWithinTimeframe(e.created_at || e.date));
 
-    // 1. Product Sales Revenue
     const totalProductSales = filteredSales.reduce(
       (acc, sale) => acc + Number(sale.amount || sale.total_amount || sale.unit_price || 0),
       0
     );
 
-    // 2. Service Revenue
     const totalServicesRevenue = filteredServices.reduce(
       (acc, service) => acc + Number(service.price || service.amount || service.total_amount || 0),
       0
     );
 
-    // Total Revenue (Products + Services)
     const totalSales = totalProductSales + totalServicesRevenue;
 
-    // 3. Total Expenses
     const totalExpenses = filteredExpenses.reduce(
       (acc, expense) => acc + Number(expense.amount || 0),
       0
     );
 
-    // 4. Gross Product Profit
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
       const product = productMap.get(sale.product_id);
       const qty = Number(sale.quantity || 1);
       const saleAmount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
       const unitCost = Number(sale.cost_price || product?.cost_price || 0);
 
-      const margin = saleAmount - (unitCost * qty);
-      return acc + margin;
+      return acc + (saleAmount - unitCost * qty);
     }, 0);
 
-    // 5. Net Service Profit (Service Revenue minus any direct service cost if applicable)
     const netServiceProfit = filteredServices.reduce((acc, service) => {
       const price = Number(service.price || service.amount || service.total_amount || 0);
       const cost = Number(service.cost || service.cost_price || 0);
       return acc + (price - cost);
     }, 0);
 
-    // 6. Net Profit = (Product Profit + Service Profit) - Expenses
-    const netProfit = (grossProductProfit + netServiceProfit) - totalExpenses;
+    const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
 
     return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, netProfit };
   }, [sales, services, expenses, timeframe, productMap]);
@@ -261,7 +284,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Step 3 Banner: End of Day Summary Display */}
+      {/* End of Day Summary Display */}
       {dailySummary && (
         <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
           <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
@@ -289,7 +312,7 @@ export default function Dashboard() {
             <div>
               <p className="text-slate-400">Top Item Sold</p>
               <p className="text-base font-bold text-amber-300 mt-1 truncate">
-                {dailySummary.top_item_name} ({dailySummary.top_item_qty})
+                {dailySummary.top_item_name || "N/A"} ({dailySummary.top_item_qty || 0})
               </p>
             </div>
 
@@ -352,9 +375,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Tables: Recent Sales & Low Stock Alert */}
+      {/* Tables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Sales List */}
         <div className="rounded-xl border bg-white p-5 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-bold text-gray-900">Recent Sales</h3>
@@ -390,7 +412,6 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Low Stock Alert */}
         <div className="rounded-xl border bg-white p-5 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-bold text-gray-900">Low Stock Alert</h3>

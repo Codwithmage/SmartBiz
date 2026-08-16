@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
+import { useBusiness } from "../../../context/BusinessContext";
 
 // Date Helpers
 const isToday = (dateString) => {
@@ -23,29 +24,39 @@ const isThisMonth = (dateString) => {
   );
 };
 
-// Helper to map currency codes to symbols
+// Helper to map currency codes/symbols to actual symbols
 const getSymbolFromCurrency = (currencyCode) => {
-  switch (currencyCode?.toUpperCase()) {
+  if (!currencyCode) return "₦"; // Default fallback to NGN
+  
+  const cleanCode = currencyCode.trim().toUpperCase();
+  switch (cleanCode) {
     case "USD":
+    case "$":
       return "$";
     case "EUR":
+    case "€":
       return "€";
     case "GBP":
+    case "£":
       return "£";
     case "NGN":
+    case "₦":
       return "₦";
     default:
-      return currencyCode || "$";
+      return currencyCode;
   }
 };
 
 export default function ExpensesPage() {
+  const { business } = useBusiness(); // Use central business context
+
   const [activeTab, setActiveTab] = useState("OVERVIEW");
   const [expenses, setExpenses] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [currencySymbol, setCurrencySymbol] = useState("$");
+  const [currencySymbol, setCurrencySymbol] = useState("₦");
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
+  const [userRole, setUserRole] = useState(""); // Track user role
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState(null);
@@ -59,6 +70,10 @@ export default function ExpensesPage() {
   const [filterCategory, setFilterCategory] = useState("ALL");
   const [filterPaymentMethod, setFilterPaymentMethod] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
+
+  // Permission Flags (Only Owners & Admins can edit/delete)
+  const canEdit = ["owner", "admin", "super_admin"].includes(userRole);
+  const canDelete = ["owner", "admin", "super_admin"].includes(userRole);
 
   // Form States
   const [expenseForm, setExpenseForm] = useState({
@@ -77,88 +92,114 @@ export default function ExpensesPage() {
 
   // Helper to resolve category display name
   const getCategoryName = useCallback(
-    (catIdOrName) => {
-      if (!catIdOrName) return "Uncategorized";
+    (catIdOrName, expenseObj) => {
+      const value = catIdOrName || expenseObj?.category || expenseObj?.category_name;
+      if (!value) return "Uncategorized";
+
       const found = categories.find(
-        (c) => c.id === catIdOrName || c.name === catIdOrName
+        (c) =>
+          c.id === value ||
+          c.name?.toLowerCase() === value?.toString().toLowerCase()
       );
-      return found ? found.name : catIdOrName;
+      return found ? found.name : value;
     },
     [categories]
   );
 
   // ----------------------------------------------------
+  // HELPER: FETCH BUSINESS INFO AND ROLE FOR USERS
+  // ----------------------------------------------------
+  const getBusinessInfo = useCallback(async () => {
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser();
+      if (userError || !user) return business || null;
+
+      // Get profile (business_id AND role)
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("business_id, role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profile?.role) {
+        setUserRole(profile.role.toString().toLowerCase());
+      }
+
+      if (business?.id) return business;
+      if (!profile?.business_id) return null;
+
+      const { data: biz } = await supabase
+        .from("businesses")
+        .select("*")
+        .eq("id", profile.business_id)
+        .maybeSingle();
+
+      return biz || null;
+    } catch (err) {
+      console.error("Failed to fetch business info:", err);
+      return business || null;
+    }
+  }, [business]);
+
+  // ----------------------------------------------------
   // 1. FETCH DATA & BUSINESS CURRENCY FROM SUPABASE
   // ----------------------------------------------------
   const fetchAllData = useCallback(async () => {
-  try {
-    setIsLoading(true);
-    setErrorMessage("");
+    try {
+      setIsLoading(true);
+      setErrorMessage("");
 
-    // 1. Ensure user session is fully resolved first
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      console.warn("No active user session found.");
-    }
+      const activeBiz = await getBusinessInfo();
+      const businessId = activeBiz?.id;
 
-    // 2. Fetch expenses and categories
-    const [expensesRes, categoriesRes] = await Promise.all([
-      supabase.from("expenses").select("*").order("date", { ascending: false }),
-      supabase.from("expense_categories").select("*").order("name", { ascending: true }),
-    ]);
-
-    if (expensesRes.error) throw expensesRes.error;
-    if (categoriesRes.error) throw categoriesRes.error;
-
-    setExpenses(expensesRes.data || []);
-    setCategories(categoriesRes.data || []);
-
-    // 3. Fetch business settings independently to prevent total failure if missing
-    if (user) {
-      const { data: businessData, error: businessError } = await supabase
-        .from("businesses")
-        .select("currency")
-        .eq("owner_id", user.id) // Verify if your DB uses owner_id or user_id
-        .maybeSingle();
-
-      if (businessError) {
-        console.error("Error fetching business currency:", businessError);
-      }
-
-      if (businessData) {
-        const symbol =
-          businessData.currency_symbol ||
-          getSymbolFromCurrency(businessData.currency);
-        
+      // Resolve Currency
+      if (activeBiz) {
+        const rawCurrency =
+          activeBiz.currency_symbol || activeBiz.currency || activeBiz.currency_code;
+        const symbol = getSymbolFromCurrency(rawCurrency);
         if (symbol) setCurrencySymbol(symbol);
       }
+
+      // Build fetch queries
+      let expensesQuery = supabase
+        .from("expenses")
+        .select("*")
+        .order("date", { ascending: false });
+
+      let categoriesQuery = supabase
+        .from("expense_categories")
+        .select("*")
+        .order("name", { ascending: true });
+
+      // Scope results strictly to the assigned business
+      if (businessId) {
+        expensesQuery = expensesQuery.eq("business_id", businessId);
+        categoriesQuery = categoriesQuery.or(
+          `business_id.eq.${businessId},business_id.is.null`
+        );
+      }
+
+      const [expensesRes, categoriesRes] = await Promise.all([
+        expensesQuery,
+        categoriesQuery,
+      ]);
+
+      if (expensesRes.error) throw expensesRes.error;
+      if (categoriesRes.error) throw categoriesRes.error;
+
+      setExpenses(expensesRes.data || []);
+      setCategories(categoriesRes.data || []);
+    } catch (err) {
+      console.error("Failed to load expenses/categories:", err);
+      setErrorMessage(`Database Error: ${err.message}`);
+    } finally {
+      setIsLoading(false);
     }
-  } catch (err) {
-    console.error("Failed to load expenses/categories:", err);
-    setErrorMessage(`Database Error: ${err.message}`);
-  } finally {
-    setIsLoading(false);
-  }
-}, []);
+  }, [getBusinessInfo]);
 
   useEffect(() => {
     fetchAllData();
   }, [fetchAllData]);
-
-  // Helper to get Business ID safely
-  const getBusinessId = async () => {
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) throw new Error("User not authenticated");
-
-    const { data: business, error: businessError } = await supabase
-      .from("businesses")
-      .select("id")
-      .eq("owner_id", user.id)
-      .maybeSingle();
-
-    if (businessError) throw businessError;
-    return business?.id || null;
-  };
 
   // ----------------------------------------------------
   // 2. STATS & COMPUTED FILTERS
@@ -197,7 +238,7 @@ export default function ExpensesPage() {
       const matchesCategory =
         filterCategory === "ALL" ||
         catVal === filterCategory ||
-        getCategoryName(catVal) === filterCategory;
+        getCategoryName(catVal, item) === filterCategory;
 
       const matchesPayment =
         filterPaymentMethod === "ALL" || item.payment_method === filterPaymentMethod;
@@ -219,7 +260,7 @@ export default function ExpensesPage() {
   // 3. EXPENSE ACTIONS (SAVE / EDIT / DELETE)
   // ----------------------------------------------------
   const resetExpenseForm = () => {
-    const activeCat = categories.find((c) => c.active);
+    const activeCat = categories.find((c) => c.active !== false);
     setExpenseForm({
       title: "",
       categoryId: activeCat ? activeCat.id : "",
@@ -240,7 +281,8 @@ export default function ExpensesPage() {
     }
 
     try {
-      const businessId = await getBusinessId();
+      const activeBiz = await getBusinessInfo();
+      const businessId = activeBiz?.id;
 
       const payload = {
         title: expenseForm.title,
@@ -327,7 +369,8 @@ export default function ExpensesPage() {
     if (!categoryNameInput.trim()) return;
 
     try {
-      const businessId = await getBusinessId();
+      const activeBiz = await getBusinessInfo();
+      const businessId = activeBiz?.id;
 
       if (editingCategory) {
         const { data, error } = await supabase
@@ -524,7 +567,7 @@ export default function ExpensesPage() {
                     <div>
                       <p className="text-sm font-semibold text-gray-900">{exp.title}</p>
                       <p className="text-xs text-gray-500">
-                        {getCategoryName(exp.category_id || exp.category)} •{" "}
+                        {getCategoryName(exp.category_id || exp.category, exp)} •{" "}
                         {exp.date ? new Date(exp.date).toLocaleDateString() : ""}
                       </p>
                     </div>
@@ -627,7 +670,7 @@ export default function ExpensesPage() {
                         <p className="font-semibold text-gray-900">{exp.title}</p>
                         <p className="text-[11px] text-gray-500">{exp.vendor || "No Vendor"}</p>
                       </td>
-                      <td className="py-3 px-3">{getCategoryName(exp.category_id || exp.category)}</td>
+                      <td className="py-3 px-3">{getCategoryName(exp.category_id || exp.category, exp)}</td>
                       <td className="py-3 px-3 whitespace-nowrap">
                         {exp.date ? new Date(exp.date).toLocaleDateString() : "-"}
                       </td>
@@ -671,16 +714,18 @@ export default function ExpensesPage() {
               <h2 className="text-base sm:text-lg font-bold text-gray-900">Expense Categories</h2>
               <p className="text-xs text-gray-500">Manage classification for company spending.</p>
             </div>
-            <button
-              onClick={() => {
-                setEditingCategory(null);
-                setCategoryNameInput("");
-                setIsCategoryModalOpen(true);
-              }}
-              className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-            >
-              + Add Category
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => {
+                  setEditingCategory(null);
+                  setCategoryNameInput("");
+                  setIsCategoryModalOpen(true);
+                }}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                + Add Category
+              </button>
+            )}
           </div>
 
           <div className="divide-y">
@@ -693,36 +738,40 @@ export default function ExpensesPage() {
                     <p className="text-sm font-semibold text-gray-900">{cat.name}</p>
                     <span
                       className={`text-[10px] font-bold uppercase ${
-                        cat.active ? "text-green-600" : "text-gray-400"
+                        cat.active !== false ? "text-green-600" : "text-gray-400"
                       }`}
                     >
-                      {cat.active ? "Active" : "Deactivated"}
+                      {cat.active !== false ? "Active" : "Deactivated"}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => toggleCategoryStatus(cat)}
-                      className="rounded border px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
-                    >
-                      {cat.active ? "Deactivate" : "Activate"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setEditingCategory(cat);
-                        setCategoryNameInput(cat.name);
-                        setIsCategoryModalOpen(true);
-                      }}
-                      className="rounded border px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => handleDeleteCategory(cat.id)}
-                      className="rounded border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
-                  </div>
+                  {canEdit && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleCategoryStatus(cat)}
+                        className="rounded border px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                      >
+                        {cat.active !== false ? "Deactivate" : "Activate"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingCategory(cat);
+                          setCategoryNameInput(cat.name);
+                          setIsCategoryModalOpen(true);
+                        }}
+                        className="rounded border px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                      >
+                        Edit
+                      </button>
+                      {canDelete && (
+                        <button
+                          onClick={() => handleDeleteCategory(cat.id)}
+                          className="rounded border px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}
@@ -777,7 +826,7 @@ export default function ExpensesPage() {
                   >
                     <option value="" disabled>Select Category</option>
                     {categories
-                      .filter((c) => c.active)
+                      .filter((c) => c.active !== false)
                       .map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.name}
@@ -1000,7 +1049,7 @@ export default function ExpensesPage() {
               <div className="flex justify-between">
                 <span className="text-gray-500">Category:</span>
                 <span className="font-semibold text-gray-900">
-                  {getCategoryName(selectedExpense.category_id || selectedExpense.category)}
+                  {getCategoryName(selectedExpense.category_id || selectedExpense.category, selectedExpense)}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -1046,18 +1095,30 @@ export default function ExpensesPage() {
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t">
-              <button
-                onClick={() => handleDeleteExpense(selectedExpense.id)}
-                className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
-              >
-                Delete
-              </button>
-              <button
-                onClick={() => handleOpenEditExpense(selectedExpense)}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
-              >
-                Edit
-              </button>
+              {canDelete && (
+                <button
+                  onClick={() => handleDeleteExpense(selectedExpense.id)}
+                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+                >
+                  Delete
+                </button>
+              )}
+              {canEdit && (
+                <button
+                  onClick={() => handleOpenEditExpense(selectedExpense)}
+                  className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  Edit
+                </button>
+              )}
+              {!canEdit && !canDelete && (
+                <button
+                  onClick={() => setSelectedExpense(null)}
+                  className="rounded-lg border px-4 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100"
+                >
+                  Close
+                </button>
+              )}
             </div>
           </div>
         </div>

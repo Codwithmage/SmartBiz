@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useSales } from "../context/SalesContext";
 import { useInventory } from "../../inventory/context/InventoryContext";
 import { useServices } from "../../services/context/ServicesContext";
@@ -21,7 +21,7 @@ function SalesPage() {
   const { business } = useBusiness();
   const currency = business?.currency || "NGN";
 
-  const { sales, loadingSales, loadSales, addSale } = useSales();
+  const { sales, loadingSales, loadSales, addSale, updatePaymentStatus } = useSales();
   const { products, loadProducts } = useInventory();
   const { services, loadServices } = useServices();
 
@@ -40,6 +40,8 @@ function SalesPage() {
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [paymentStatus, setPaymentStatus] = useState("PAID");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const printRef = useRef(null);
 
   useEffect(() => {
     if (businessId) {
@@ -63,7 +65,7 @@ function SalesPage() {
         todaysSales += amount;
       }
 
-      if (s.payment_status === "OUTSTANDING" || s.payment_status === "PARTIAL") {
+      if (s.payment_status === "OUTSTANDING" || s.payment_status === "PARTIAL" || s.payment_status === "UNPAID") {
         outstandingSales += parseFloat(s.balance_due || amount);
       }
     });
@@ -77,7 +79,52 @@ function SalesPage() {
     };
   }, [sales]);
 
-  // Merge Products and Services into a single catalog
+  const handlePrintReceipt = () => {
+    window.print();
+  };
+
+  // Improved handler to clear outstanding payments
+  const handleMarkAsPaid = async (sale) => {
+    if (!updatePaymentStatus) {
+      alert("Payment status update function is not defined in SalesContext.");
+      return;
+    }
+
+    const confirm = window.confirm(
+      `Mark payment for ${sale.customer_name || sale.receipt_number || "this sale"} as PAID?`
+    );
+    if (!confirm) return;
+
+    try {
+      const { error } = await updatePaymentStatus(
+        sale.id,
+        sale.total_amount,
+        "PAID",
+        businessId
+      );
+
+      if (error) {
+        console.error("Update Payment Status Error:", error);
+        alert("Failed to update status: " + (error.message || "Permission denied or network issue."));
+        return;
+      }
+
+      // Reload sales data and update local state for real-time reflection
+      if (businessId) {
+        await loadSales(businessId);
+      }
+
+      if (selectedSale && selectedSale.id === sale.id) {
+        setSelectedSale((prev) => (prev ? { ...prev, payment_status: "PAID", balance_due: 0 } : null));
+      }
+
+      alert("Payment status updated to PAID successfully.");
+    } catch (err) {
+      console.error("Unexpected error in handleMarkAsPaid:", err);
+      alert("Error updating payment status: " + err.message);
+    }
+  };
+
   const unifiedCatalog = useMemo(() => {
     const productList = (products || []).map((p) => ({
       id: p.id,
@@ -92,7 +139,7 @@ function SalesPage() {
       name: s.name,
       selling_price: Number(s.price || s.selling_price || 0),
       type: "SERVICE",
-      availableStock: Infinity, // Services do not have inventory limits
+      availableStock: Infinity,
     }));
 
     return [...productList, ...serviceList];
@@ -147,7 +194,6 @@ function SalesPage() {
     setProductQuery("");
   };
 
-  // Helper function to explicitly remove an item from the cart
   const handleRemoveFromCart = (id, itemType) => {
     setCart((prev) =>
       prev.filter((item) => !(item.id === id && item.item_type === itemType))
@@ -179,7 +225,7 @@ function SalesPage() {
     (sum, item) => sum + item.unit_price * item.quantity,
     0
   );
-  
+
   const parsedDiscount = parseFloat(discountPercent) || 0;
   const discountAmount = (cartSubtotal * parsedDiscount) / 100;
   const cartTotal = Math.max(0, cartSubtotal - discountAmount);
@@ -209,7 +255,7 @@ function SalesPage() {
       })),
     };
 
-    const { error } = await addSale(salePayload);
+    const { error, data } = await addSale(salePayload);
 
     if (error) {
       setIsSubmitting(false);
@@ -227,7 +273,12 @@ function SalesPage() {
     setCart([]);
     setCustomerName("");
     setDiscountPercent(0);
-    setActiveTab("OVERVIEW_HISTORY");
+
+    if (data && data[0]) {
+      setSelectedSale(data[0]);
+    } else {
+      setActiveTab("OVERVIEW_HISTORY");
+    }
   };
 
   const filteredSalesHistory = useMemo(() => {
@@ -243,9 +294,21 @@ function SalesPage() {
   }, [sales, historySearch, paymentStatusFilter]);
 
   return (
-    <div className="space-y-6 px-2 sm:px-0">
+    <div className="space-y-6 px-2 sm:px-0 max-w-7xl mx-auto">
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          #printable-receipt, #printable-receipt * { visibility: visible; }
+          #printable-receipt {
+            position: absolute; left: 0; top: 0; width: 100%; padding: 0; margin: 0;
+            box-shadow: none !important; border: none !important;
+          }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
       {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between no-print">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Sales</h1>
           <p className="text-xs sm:text-sm text-gray-500">
@@ -279,46 +342,67 @@ function SalesPage() {
 
       {activeTab === "OVERVIEW_HISTORY" && (
         <>
-          {/* Overview Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-            <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
-              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Today's Sales</p>
-              <p className="mt-1 text-lg sm:text-2xl font-bold text-green-600">
+          {/* Responsive Cards Grid Layout */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4 no-print">
+            <div className="rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-xs flex flex-col justify-between min-w-0">
+              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">
+                Today's Sales
+              </p>
+              <p
+                className="mt-2 text-lg sm:text-xl font-bold text-green-600 truncate min-w-0"
+                title={formatCurrency(overviewStats.todaysSales, currency)}
+              >
                 {formatCurrency(overviewStats.todaysSales, currency)}
               </p>
             </div>
 
-            <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
-              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Total Sales</p>
-              <p className="mt-1 text-lg sm:text-2xl font-bold text-gray-900">
+            <div className="rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-xs flex flex-col justify-between min-w-0">
+              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">
+                Total Sales
+              </p>
+              <p
+                className="mt-2 text-lg sm:text-xl font-bold text-gray-900 truncate min-w-0"
+                title={formatCurrency(overviewStats.totalSales, currency)}
+              >
                 {formatCurrency(overviewStats.totalSales, currency)}
               </p>
             </div>
 
-            <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
-              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Transactions</p>
-              <p className="mt-1 text-lg sm:text-2xl font-bold text-gray-900">
+            <div className="rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-xs flex flex-col justify-between min-w-0">
+              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">
+                Transactions
+              </p>
+              <p className="mt-2 text-lg sm:text-xl font-bold text-gray-900 truncate min-w-0">
                 {overviewStats.totalTransactions}
               </p>
             </div>
 
-            <div className="rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
-              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Average Sale</p>
-              <p className="mt-1 text-lg sm:text-2xl font-bold text-gray-900">
+            <div className="rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-xs flex flex-col justify-between min-w-0">
+              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">
+                Average Sale
+              </p>
+              <p
+                className="mt-2 text-lg sm:text-xl font-bold text-gray-900 truncate min-w-0"
+                title={formatCurrency(overviewStats.averageSale, currency)}
+              >
                 {formatCurrency(overviewStats.averageSale, currency)}
               </p>
             </div>
 
-            <div className="col-span-2 sm:col-span-1 rounded-xl border bg-white p-3 sm:p-4 shadow-sm">
-              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase">Credit / Outstanding</p>
-              <p className="mt-1 text-lg sm:text-2xl font-bold text-red-600">
+            <div className="rounded-xl border border-gray-200 bg-white p-3.5 sm:p-4 shadow-xs flex flex-col justify-between min-w-0">
+              <p className="text-[10px] sm:text-xs font-semibold text-gray-500 uppercase tracking-wider truncate">
+                Credit / Outstanding
+              </p>
+              <p
+                className="mt-2 text-lg sm:text-xl font-bold text-red-600 truncate min-w-0"
+                title={formatCurrency(overviewStats.outstandingSales, currency)}
+              >
                 {formatCurrency(overviewStats.outstandingSales, currency)}
               </p>
             </div>
           </div>
 
-          {/* Sales History Table */}
-          <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-xs space-y-4 no-print">
             <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
               <h2 className="text-base sm:text-lg font-bold text-gray-900">Sales History</h2>
               <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
@@ -380,7 +464,7 @@ function SalesPage() {
                           {sale.customer_name || "Walk-in Customer"}
                         </td>
                         <td className="py-3 px-3 text-center">
-                          {sale.sale_items?.length || 0}
+                          {sale.sale_items?.length || sale.items?.length || 0}
                         </td>
                         <td className="py-3 px-3 text-right font-semibold text-gray-900 whitespace-nowrap">
                           {formatCurrency(sale.total_amount, currency)}
@@ -388,7 +472,7 @@ function SalesPage() {
                         <td className="py-3 px-3 text-center">
                           <span
                             className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                              sale.payment_status === "OUTSTANDING"
+                              sale.payment_status === "OUTSTANDING" || sale.payment_status === "UNPAID" || sale.payment_status === "PARTIAL"
                                 ? "bg-red-100 text-red-800"
                                 : "bg-green-100 text-green-800"
                             }`}
@@ -397,12 +481,24 @@ function SalesPage() {
                           </span>
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <button
-                            onClick={() => setSelectedSale(sale)}
-                            className="rounded border border-gray-300 px-2.5 py-1 text-xs font-medium hover:bg-gray-100"
-                          >
-                            View
-                          </button>
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => setSelectedSale(sale)}
+                              className="rounded border border-gray-300 px-2.5 py-1 text-xs font-medium hover:bg-gray-100"
+                            >
+                              View
+                            </button>
+                            {(sale.payment_status === "OUTSTANDING" ||
+                              sale.payment_status === "PARTIAL" ||
+                              sale.payment_status === "UNPAID") && (
+                              <button
+                                onClick={() => handleMarkAsPaid(sale)}
+                                className="rounded bg-green-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-green-700 transition"
+                              >
+                                Mark Paid
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -415,13 +511,12 @@ function SalesPage() {
       )}
 
       {activeTab === "NEW_SALE" && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 space-y-4 rounded-xl border bg-white p-4 sm:p-5 shadow-sm">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 no-print">
+          <div className="lg:col-span-2 space-y-4 rounded-xl border bg-white p-4 sm:p-5 shadow-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <h2 className="text-base sm:text-lg font-bold text-gray-900">
                 Search Products & Services
               </h2>
-              {/* Filter Tabs */}
               <div className="flex rounded-md bg-gray-100 p-0.5 text-xs">
                 {["ALL", "PRODUCT", "SERVICE"].map((type) => (
                   <button
@@ -585,8 +680,7 @@ function SalesPage() {
             )}
           </div>
 
-          {/* Checkout Panel */}
-          <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4 h-fit">
+          <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-xs space-y-4 h-fit">
             <h2 className="text-base sm:text-lg font-bold text-gray-900 border-b pb-2">Checkout</h2>
 
             <div>
@@ -665,7 +759,7 @@ function SalesPage() {
             <button
               onClick={handleCompleteSale}
               disabled={isSubmitting || cart.length === 0}
-              className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+              className="w-full rounded-lg bg-blue-600 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition"
             >
               {isSubmitting ? "Completing Sale..." : "Complete Sale"}
             </button>
@@ -673,20 +767,27 @@ function SalesPage() {
         </div>
       )}
 
-      {/* Receipt Modal */}
+      {/* Receipt Modal & Printable Template */}
       {selectedSale && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
-          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
+          <div
+            id="printable-receipt"
+            ref={printRef}
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4"
+          >
             <div className="border-b pb-3 flex justify-between items-start">
               <div>
-                <h3 className="text-base sm:text-lg font-bold text-gray-900">Sale Details</h3>
+                <h2 className="text-xl font-bold text-gray-900">
+                  {business?.name || "Sales Receipt"}
+                </h2>
+                <h3 className="text-sm font-semibold text-gray-700">Receipt Details</h3>
                 <p className="text-xs text-gray-500">
                   {selectedSale.receipt_number || `#${selectedSale.id}`}
                 </p>
               </div>
               <button
                 onClick={() => setSelectedSale(null)}
-                className="text-gray-400 hover:text-gray-600 text-lg font-bold p-1"
+                className="text-gray-400 hover:text-gray-600 text-lg font-bold p-1 no-print"
               >
                 ✕
               </button>
@@ -705,36 +806,59 @@ function SalesPage() {
                   {selectedSale.customer_name || "Walk-in Customer"}
                 </p>
               </div>
+              <div>
+                <p className="text-gray-500">Payment Method</p>
+                <p className="font-semibold text-gray-900 uppercase">
+                  {selectedSale.payment_method || "CASH"}
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-500">Payment Status</p>
+                <span
+                  className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    selectedSale.payment_status === "OUTSTANDING" || selectedSale.payment_status === "UNPAID" || selectedSale.payment_status === "PARTIAL"
+                      ? "bg-red-100 text-red-800"
+                      : "bg-green-100 text-green-800"
+                  }`}
+                >
+                  {selectedSale.payment_status || "PAID"}
+                </span>
+              </div>
             </div>
 
-            <div className="border rounded-md overflow-x-auto">
-              <table className="w-full text-left text-xs min-w-[300px]">
-                <thead className="bg-gray-50 border-b font-semibold">
-                  <tr>
-                    <th className="p-2">Item</th>
-                    <th className="p-2 text-center">Type</th>
-                    <th className="p-2 text-center">Qty</th>
-                    <th className="p-2 text-right">Total</th>
+            {/* Receipt Items Table */}
+            <div className="border-t border-b py-3">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-gray-500 border-b pb-1">
+                    <th className="py-1">Item</th>
+                    <th className="py-1 text-center">Qty</th>
+                    <th className="py-1 text-right">Price</th>
+                    <th className="py-1 text-right">Total</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y">
-                  {selectedSale.sale_items?.map((item) => (
-                    <tr key={item.id}>
-                      <td className="p-2">{item.product_name}</td>
-                      <td className="p-2 text-center">
-                        <span
-                          className={`px-1.5 py-0.5 text-[9px] font-semibold rounded ${
-                            item.item_type === "SERVICE"
-                              ? "bg-purple-100 text-purple-700"
-                              : "bg-blue-100 text-blue-700"
-                          }`}
-                        >
-                          {item.item_type || "PRODUCT"}
-                        </span>
+                <tbody className="divide-y text-gray-800">
+                  {(selectedSale.sale_items || selectedSale.items || []).map((item, idx) => (
+                    <tr key={item.id || idx}>
+                      <td className="py-2">
+                        <div className="font-medium text-gray-900">
+                          {item.product_name || item.name || "Item"}
+                        </div>
+                        {item.item_type && (
+                          <span className="text-[9px] text-gray-500 uppercase">
+                            {item.item_type}
+                          </span>
+                        )}
                       </td>
-                      <td className="p-2 text-center">{item.quantity}</td>
-                      <td className="p-2 text-right font-medium">
-                        {formatCurrency(item.total_price, currency)}
+                      <td className="py-2 text-center">{item.quantity}</td>
+                      <td className="py-2 text-right">
+                        {formatCurrency(item.unit_price, currency)}
+                      </td>
+                      <td className="py-2 text-right font-semibold">
+                        {formatCurrency(
+                          item.total_price || item.unit_price * item.quantity,
+                          currency
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -742,33 +866,52 @@ function SalesPage() {
               </table>
             </div>
 
-            <div className="space-y-1 text-xs border-t pt-3">
-              <div className="flex justify-between text-gray-600">
-                <span>Payment Method:</span>
-                <span className="font-medium text-gray-900">{selectedSale.payment_method}</span>
+            {/* Receipt Financial Totals */}
+            <div className="space-y-1 text-xs text-gray-700">
+              <div className="flex justify-between">
+                <span>Subtotal:</span>
+                <span>
+                  {formatCurrency(
+                    selectedSale.subtotal || selectedSale.total_amount,
+                    currency
+                  )}
+                </span>
               </div>
-              <div className="flex justify-between text-gray-600">
-                <span>Payment Status:</span>
-                <span className="font-medium text-gray-900">{selectedSale.payment_status}</span>
-              </div>
-              <div className="flex justify-between text-sm font-bold text-gray-900 pt-2 border-t">
+              {parseFloat(selectedSale.discount_amount || 0) > 0 && (
+                <div className="flex justify-between text-red-600">
+                  <span>Discount:</span>
+                  <span>-{formatCurrency(selectedSale.discount_amount, currency)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-bold text-sm text-gray-900 border-t pt-2">
                 <span>Total Amount:</span>
                 <span>{formatCurrency(selectedSale.total_amount, currency)}</span>
               </div>
             </div>
 
-            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 sm:gap-3 pt-3 border-t">
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-3 pt-4 border-t no-print">
+              {(selectedSale.payment_status === "OUTSTANDING" ||
+                selectedSale.payment_status === "PARTIAL" ||
+                selectedSale.payment_status === "UNPAID") && (
+                <button
+                  onClick={() => handleMarkAsPaid(selectedSale)}
+                  className="rounded bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700 transition"
+                >
+                  Mark as Paid
+                </button>
+              )}
               <button
-                onClick={() => setSelectedSale(null)}
-                className="w-full sm:w-auto rounded-md bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-200"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => window.print()}
-                className="w-full sm:w-auto rounded-md bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                onClick={handlePrintReceipt}
+                className="rounded bg-blue-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 transition"
               >
                 Print Receipt
+              </button>
+              <button
+                onClick={() => setSelectedSale(null)}
+                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-100"
+              >
+                Close
               </button>
             </div>
           </div>

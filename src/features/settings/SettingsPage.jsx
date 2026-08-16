@@ -47,7 +47,7 @@ export default function SettingsPage() {
   });
 
   // ----------------------------------------------------
-  // 1. FETCH ALL INITIAL DATA
+  // 1. FETCH ALL INITIAL DATA (WITH BUSINESS FILTERING)
   // ----------------------------------------------------
   const fetchSettings = useCallback(async () => {
     try {
@@ -58,17 +58,17 @@ export default function SettingsPage() {
       if (userError || !currentUser) throw new Error("User not authenticated");
       setUser(currentUser);
 
-      // Fetch Business Record
-      const { data: busData, error: busError } = await supabase
+      let activeBusinessId = null;
+
+      // Try fetching business record if user is Owner
+      const { data: busData } = await supabase
         .from("businesses")
         .select("*")
         .eq("owner_id", currentUser.id)
         .maybeSingle();
 
-      if (busError) throw busError;
-
       if (busData) {
-        setBusinessId(busData.id);
+        activeBusinessId = busData.id;
         setProfileForm({
           name: busData.name || "",
           email: busData.email || currentUser.email || "",
@@ -84,16 +84,32 @@ export default function SettingsPage() {
           default_payment_method: busData.default_payment_method || "CASH",
         });
       } else {
+        // Fallback for Managers/Cashiers: fetch business_id from profiles
+        const { data: profile } = await supabase
+          .from("profiles")
+          .select("business_id")
+          .eq("id", currentUser.id)
+          .maybeSingle();
+
+        activeBusinessId = profile?.business_id || null;
         setProfileForm((prev) => ({ ...prev, email: currentUser.email || "" }));
       }
 
-      // Fetch Categories
-      const { data: catData } = await supabase
-        .from("expense_categories")
-        .select("*")
-        .order("name", { ascending: true });
+      setBusinessId(activeBusinessId);
 
-      setCategories(catData || []);
+      // Fetch Categories strictly for this business
+      if (activeBusinessId) {
+        const { data: catData, error: catError } = await supabase
+          .from("expense_categories")
+          .select("*")
+          .eq("business_id", activeBusinessId)
+          .order("name", { ascending: true });
+
+        if (catError) throw catError;
+        setCategories(catData || []);
+      } else {
+        setCategories([]);
+      }
     } catch (err) {
       console.error("Error loading settings:", err);
       setMessage({ type: "error", text: `Failed to load settings: ${err.message}` });
@@ -117,11 +133,11 @@ export default function SettingsPage() {
     try {
       const payload = {
         owner_id: user.id,
-        business_name: profileForm.name,
+        name: profileForm.name,
         email: profileForm.email,
         phone: profileForm.phone,
         address: profileForm.address,
-        //description: profileForm.description,
+        description: profileForm.description,
       };
 
       const { data, error } = await supabase
@@ -173,17 +189,22 @@ export default function SettingsPage() {
   };
 
   // ----------------------------------------------------
-  // 4. CATEGORY ACTIONS
+  // 4. CATEGORY ACTIONS (BUSINESS SCOPED)
   // ----------------------------------------------------
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (!newCatName.trim()) return;
 
+    if (!businessId) {
+      setMessage({ type: "error", text: "No active business found. Cannot assign category." });
+      return;
+    }
+
     try {
       const payload = {
         name: newCatName.trim(),
         active: true,
-        ...(businessId && { business_id: businessId }),
+        business_id: businessId,
       };
 
       const { data, error } = await supabase

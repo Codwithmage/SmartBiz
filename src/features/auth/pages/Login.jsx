@@ -7,6 +7,7 @@ import Button from "../../../components/ui/Button";
 
 import { loginUser, getUserBusiness } from "../services/authService";
 import { useNotification } from "../../notifications/context/NotificationContext";
+import supabase from "../../../supabase/SupabaseClient";
 
 function Login() {
   const navigate = useNavigate();
@@ -56,7 +57,16 @@ function Login() {
       return;
     }
 
-    // Check if user has an existing business registered
+    // Fetch user profile to check role
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role, business_id")
+      .eq("id", data.user.id)
+      .maybeSingle();
+
+    const userRole = profile?.role || data.user?.user_metadata?.role || "CASHIER";
+
+    // Fetch user business details
     const { data: business } = await getUserBusiness(data.user.id);
 
     setLoading(false);
@@ -66,10 +76,13 @@ function Login() {
       message: "Welcome back!",
     });
 
+    // Route dynamically based on business link and user role
     if (business) {
-      navigate("/app", { replace: true });
-    } else {
+      navigate("/dashboard", { replace: true });
+    } else if (userRole === "OWNER") {
       navigate("/create-business", { replace: true });
+    } else {
+      navigate("/dashboard", { replace: true });
     }
   };
 

@@ -7,45 +7,67 @@ import {
   useMemo,
 } from "react";
 
+import supabase from "../supabase/SupabaseClient";
 import { useAuth } from "./AuthContext";
 import { getBusiness } from "../features/business/services/businessService";
 
 const BusinessContext = createContext(null);
 
 export function BusinessProvider({ children }) {
-  const { user, loading: authLoading } = useAuth();
+  const { user, businessId: authBusinessId, loading: authLoading } = useAuth();
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const userId = user?.id;
 
-  const loadBusiness = useCallback(async (targetUserId) => {
-    const idToFetch = targetUserId || userId;
-
-    if (!idToFetch) {
+  const loadBusiness = useCallback(async () => {
+    if (!userId) {
       setBusiness(null);
       setLoading(false);
       return null;
     }
 
     setLoading(true);
-    const { data, error } = await getBusiness(idToFetch);
 
-    if (error) {
-      console.error("Failed to load business:", error);
+    try {
+      // 1. If user has a linked business_id (Cashiers / Managers / Linked Owners)
+      if (authBusinessId) {
+        const { data, error } = await supabase
+          .from("businesses")
+          .select("*")
+          .eq("id", authBusinessId)
+          .maybeSingle();
+
+        if (data && !error) {
+          setBusiness(data);
+          setLoading(false);
+          return data;
+        }
+      }
+
+      // 2. Fallback: Lookup business by owner_id
+      const { data, error } = await getBusiness(userId);
+
+      if (error) {
+        console.error("Failed to load business:", error);
+        setBusiness(null);
+        setLoading(false);
+        return null;
+      }
+
+      const validBusiness =
+        data && !Array.isArray(data) && Object.keys(data).length > 0 ? data : null;
+
+      setBusiness(validBusiness);
+      setLoading(false);
+      return validBusiness;
+    } catch (err) {
+      console.error("Unexpected error fetching business:", err);
       setBusiness(null);
       setLoading(false);
       return null;
     }
-
-    // Convert empty arrays or empty objects into explicit null
-    const validBusiness =
-      data && !Array.isArray(data) && Object.keys(data).length > 0 ? data : null;
-
-    setBusiness(validBusiness);
-    setLoading(false);
-    return validBusiness;
-  }, [userId]);
+  }, [userId, authBusinessId]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -56,15 +78,15 @@ export function BusinessProvider({ children }) {
       return;
     }
 
-    loadBusiness(userId);
-  }, [userId, authLoading, loadBusiness]);
+    loadBusiness();
+  }, [userId, authBusinessId, authLoading, loadBusiness]);
 
   const refreshBusiness = useCallback(async () => {
     if (!userId) {
       setBusiness(null);
       return null;
     }
-    return loadBusiness(userId);
+    return loadBusiness();
   }, [userId, loadBusiness]);
 
   const clearBusiness = useCallback(() => {
@@ -75,7 +97,7 @@ export function BusinessProvider({ children }) {
     () => ({
       business,
       loading,
-      businessLoading: loading, // Exported to match AppEntry's destructuring
+      businessLoading: loading,
       loadBusiness,
       refreshBusiness,
       clearBusiness,

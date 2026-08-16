@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 
 // Auth & Business
 import Login from "../features/auth/pages/Login";
@@ -11,7 +11,7 @@ import AppEntry from "../features/app/pages/AppEntry";
 // Inventory, Services & Categories
 import InventoryOverview from "../features/inventory/pages/InventoryOverview";
 import InventoryProducts from "../features/inventory/pages/InventoryProducts";
-import ServicesPage from "../features/inventory/pages/ServicesPage"; // <-- ADDED
+import ServicesPage from "../features/inventory/pages/ServicesPage";
 import AddProduct from "../features/inventory/pages/AddProduct";
 import CategoriesPage from "../features/categories/pages/CategoriesPage";
 import AddCategoryPage from "../features/categories/pages/AddCategoryPage";
@@ -32,6 +32,9 @@ import SettingsPage from "../features/settings/SettingsPage";
 // Guards & Layout
 import ProtectedRoute from "../components/guards/ProtectedRoute";
 import AppLayout from "../components/layout/AppLayout";
+
+// Import TeamPage
+import TeamPage from "../features/teams/pages/TeamPage";
 
 const router = createBrowserRouter([
   // Public Auth Routes
@@ -57,7 +60,7 @@ const router = createBrowserRouter([
     ),
   },
 
-  // Main Dashboard Routes
+  // Main App Routes (Base Authentication Guard)
   {
     element: (
       <ProtectedRoute>
@@ -67,26 +70,116 @@ const router = createBrowserRouter([
       </ProtectedRoute>
     ),
     children: [
-      { path: "/dashboard", element: <Dashboard /> },
-      
-      // Inventory & Services Sub-routes
-      { path: "/inventory", element: <InventoryOverview /> },
-      { path: "/inventory/products", element: <InventoryProducts /> },
-      { path: "/inventory/services", element: <ServicesPage /> }, // <-- ADDED
-      { path: "/inventory/add", element: <AddProduct /> },
-      { path: "/inventory/categories", element: <CategoriesPage /> },
-      { path: "/inventory/categories/new", element: <AddCategoryPage /> },
+      // ALL ROLES (Owner, Manager, Cashier)
+      {
+        path: "/sales",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]}>
+            <SalesPage />
+          </ProtectedRoute>
+        ),
+      },
 
-      // Sales, Expenses & Reports
-      { path: "/sales", element: <SalesPage /> },
-      { path: "/expenses", element: <ExpensesPage /> },
-      { path: "/reports", element: <ReportsPage /> },
-      { path: "/settings", element: <SettingsPage /> },
+      // INVENTORY ROUTES — OWNER, MANAGER, CASHIER
+      {
+        path: "/inventory",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <InventoryOverview />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/inventory/products",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <InventoryProducts />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/inventory/services",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <ServicesPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/inventory/add",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <AddProduct />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/inventory/categories",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <CategoriesPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/inventory/categories/new",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <AddCategoryPage />
+          </ProtectedRoute>
+        ),
+      },
+
+      // EXPENSES ROUTE — OWNER, MANAGER, CASHIER
+      {
+        path: "/expenses",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER", "CASHIER"]} fallbackPath="/sales">
+            <ExpensesPage />
+          </ProtectedRoute>
+        ),
+      },
+
+      // MANAGER & OWNER ONLY
+      {
+        path: "/dashboard",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER", "MANAGER"]} fallbackPath="/sales">
+            <Dashboard />
+          </ProtectedRoute>
+        ),
+      },
+
+      // OWNER ONLY
+      {
+        path: "/reports",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER"]} fallbackPath="/sales">
+            <ReportsPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/team",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER"]} fallbackPath="/sales">
+            <TeamPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: "/settings",
+        element: (
+          <ProtectedRoute allowedRoles={["OWNER"]} fallbackPath="/sales">
+            <SettingsPage />
+          </ProtectedRoute>
+        ),
+      },
     ],
   },
 
   // Fallback Route
-  { path: "*", element: <Login /> },
+  { path: "*", element: <Navigate to="/" replace /> },
 ]);
 
 export default router;

@@ -1,72 +1,91 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import AuthLayout from "../../../components/layout/AuthLayout";
 import Input from "../../../components/ui/Input";
 import Button from "../../../components/ui/Button";
+
 import { registerUser } from "../services/authService";
 import { useNotification } from "../../notifications/context/NotificationContext";
+import supabase from "../../../supabase/SupabaseClient";
 
 function Register() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { showNotification } = useNotification();
+
+  const token = searchParams.get("token"); // Invite token from TeamPage link
 
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  const [fullNameError, setFullNameError] = useState("");
-  const [emailError, setEmailError] = useState("");
-  const [passwordError, setPasswordError] = useState("");
-  const [confirmPasswordError, setConfirmPasswordError] = useState("");
-
+  const [invitationData, setInvitationData] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // 1. Check if user is registering via an Invitation Link
+  useEffect(() => {
+    async function verifyInviteToken() {
+      if (!token) return;
+
+      const { data, error } = await supabase
+        .from("invitations")
+        .select("email, business_id, role")
+        .eq("token", token)
+        .maybeSingle();
+
+      if (error || !data) {
+        showNotification({
+          type: "error",
+          message: "Invalid or expired invitation link.",
+        });
+        return;
+      }
+
+      setInvitationData(data);
+      if (data.email) setEmail(data.email);
+    }
+
+    verifyInviteToken();
+  }, [token, showNotification]);
 
   const handleRegister = async (event) => {
     event.preventDefault();
 
-    setFullNameError("");
-    setEmailError("");
-    setPasswordError("");
-    setConfirmPasswordError("");
-
-    let isValid = true;
-
-    if (!fullName.trim()) {
-      setFullNameError("Full name is required.");
-      isValid = false;
-    }
-    if (!email.trim()) {
-      setEmailError("Email is required.");
-      isValid = false;
-    }
-    if (!password.trim()) {
-      setPasswordError("Password is required.");
-      isValid = false;
-    }
-    if (!confirmPassword.trim()) {
-      setConfirmPasswordError("Please confirm your password.");
-      isValid = false;
-    }
-    if (password && confirmPassword && password !== confirmPassword) {
-      setConfirmPasswordError("Passwords do not match.");
-      isValid = false;
+    if (!fullName.trim() || !email.trim() || !password.trim() || !confirmPassword.trim()) {
+      showNotification({
+        type: "error",
+        message: "All fields are required.",
+      });
+      return;
     }
 
-    if (!isValid) return;
+    if (password !== confirmPassword) {
+      showNotification({
+        type: "error",
+        message: "Passwords do not match.",
+      });
+      return;
+    }
 
     setLoading(true);
 
+    // Determine Role & Business ID (If invited: use invitation details; otherwise default to OWNER)
+    const assignedRole = invitationData ? invitationData.role : "OWNER";
+    const assignedBusinessId = invitationData ? invitationData.business_id : null;
+
+    // 2. Register user in Supabase Auth
     const { data, error } = await registerUser({
       fullName,
       email,
       password,
+      role: assignedRole,
+      businessId: assignedBusinessId,
     });
 
-    setLoading(false);
-
     if (error) {
+      setLoading(false);
       showNotification({
         type: "error",
         message: error.message,
@@ -74,36 +93,53 @@ function Register() {
       return;
     }
 
-    // Active session created: Navigate directly to business creation
-    if (data?.session) {
-      showNotification({
-        type: "success",
-        message: "Account created! Let's set up your business.",
+    // 3. Upsert user profile with assigned business_id and role
+    if (data?.user?.id) {
+      await supabase.from("profiles").upsert({
+        id: data.user.id,
+        email: email.trim().toLowerCase(),
+        role: assignedRole,
+        business_id: assignedBusinessId,
       });
-      navigate("/create-business", { replace: true });
+
+      // Optional: Delete consumed invitation token
+      if (token) {
+        await supabase.from("invitations").delete().eq("token", token);
+      }
+    }
+
+    setLoading(false);
+
+    showNotification({
+      type: "success",
+      message: invitationData
+        ? "Account created and joined team successfully!"
+        : "Account created successfully!",
+    });
+
+    // 4. Redirect staff to POS/Sales or Owner to Create Business
+    if (assignedBusinessId) {
+      navigate(assignedRole === "CASHIER" ? "/sales" : "/dashboard", { replace: true });
     } else {
-      // Fallback if Email Confirmation is enabled in Supabase Dashboard
-      showNotification({
-        type: "info",
-        message: "Account created! Please check your email to confirm your account before logging in.",
-      });
-      navigate("/", { replace: true });
+      navigate("/create-business", { replace: true });
     }
   };
 
   return (
-    <AuthLayout subtitle="Create your account">
+    <AuthLayout subtitle={invitationData ? "Join Business Team" : "Create Account"}>
       <form onSubmit={handleRegister}>
+        {invitationData && (
+          <div className="mb-4 p-3 bg-blue-50 text-blue-700 rounded-lg text-xs font-medium border border-blue-200">
+            You are registering as a <strong>{invitationData.role}</strong>.
+          </div>
+        )}
+
         <Input
           id="fullName"
           label="Full Name"
-          placeholder="Enter your full name"
+          placeholder="Enter your name"
           value={fullName}
-          onChange={(e) => {
-            setFullName(e.target.value);
-            setFullNameError("");
-          }}
-          error={fullNameError}
+          onChange={(e) => setFullName(e.target.value)}
         />
 
         <Input
@@ -112,47 +148,36 @@ function Register() {
           type="email"
           placeholder="Enter your email"
           value={email}
-          onChange={(e) => {
-            setEmail(e.target.value);
-            setEmailError("");
-          }}
-          error={emailError}
+          disabled={!!invitationData?.email}
+          onChange={(e) => setEmail(e.target.value)}
         />
 
         <Input
           id="password"
           label="Password"
           type="password"
-          placeholder="Create a password"
+          placeholder="Create password"
           value={password}
-          onChange={(e) => {
-            setPassword(e.target.value);
-            setPasswordError("");
-          }}
-          error={passwordError}
+          onChange={(e) => setPassword(e.target.value)}
         />
 
         <Input
           id="confirmPassword"
           label="Confirm Password"
           type="password"
-          placeholder="Confirm your password"
+          placeholder="Confirm password"
           value={confirmPassword}
-          onChange={(e) => {
-            setConfirmPassword(e.target.value);
-            setConfirmPasswordError("");
-          }}
-          error={confirmPasswordError}
+          onChange={(e) => setConfirmPassword(e.target.value)}
         />
 
         <Button type="submit" disabled={loading}>
-          {loading ? "Creating Account..." : "Create Account"}
+          {loading ? "Creating Account..." : "Sign Up"}
         </Button>
 
-        <p className="mt-6 text-center text-gray-600">
+        <p className="mt-6 text-center text-gray-600 text-sm">
           Already have an account?{" "}
-          <Link to="/" className="font-semibold text-blue-600 hover:underline">
-            Login
+          <Link to="/login" className="font-semibold text-blue-600 hover:underline">
+            Log In
           </Link>
         </p>
       </form>
