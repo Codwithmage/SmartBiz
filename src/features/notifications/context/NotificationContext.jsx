@@ -13,7 +13,7 @@ export function NotificationProvider({ children }) {
       : "unsupported"
   );
 
-  // 1. Save / Upsert Push Token to Supabase
+  // 1. Save / Re-assign Push Token via Supabase RPC
   const savePushTokenToSupabase = async (token) => {
     try {
       const {
@@ -26,24 +26,17 @@ export function NotificationProvider({ children }) {
         return;
       }
 
-      console.log("🔄 Saving push token to Supabase for user:", user.id);
+      console.log("🔄 Saving/Reassigning push token to Supabase for user:", user.id);
 
-      const { data, error } = await supabase
-        .from("user_push_tokens")
-        .upsert(
-          {
-            user_id: user.id,
-            push_token: token,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "user_id" }
-        )
-        .select();
+      // Call database function to safely manage device token transfer
+      const { error } = await supabase.rpc("save_user_push_token", {
+        p_push_token: token,
+      });
 
       if (error) {
         console.error("❌ Supabase Error saving push token:", error.message, error.details);
       } else {
-        console.log("✅ Push token successfully saved to Supabase!", data);
+        console.log("✅ Push token successfully saved to Supabase!");
       }
     } catch (err) {
       console.error("Unexpected error in savePushTokenToSupabase:", err);

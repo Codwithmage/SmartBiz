@@ -23,15 +23,15 @@ export async function registerPushNotifications(userId, businessId) {
       console.log("Push Token received:", token.value);
 
       // Save token to Supabase
-      const { error } = await supabase.from("user_push_tokens").upsert(
-        {
-          user_id: userId,
-          business_id: businessId,
-          push_token: token.value,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "push_token" }
-      );
+      const { error } = await supabase.rpc("save_user_push_token", {
+  p_push_token: token,
+});
+
+if (error) {
+  console.error("❌ Error saving push token:", error.message);
+} else {
+  console.log("✅ Push token saved/reassigned successfully!");
+}
 
       if (error) console.error("Error saving push token:", error);
     });

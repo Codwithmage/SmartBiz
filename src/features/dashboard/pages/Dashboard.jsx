@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
+import { subscribeToPushNotifications } from "../../../utils/pushNotifications"; // Adjust path if needed
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const [businessInfo, setBusinessInfo] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [timeframe, setTimeframe] = useState("monthly");
+  const [pushStatus, setPushStatus] = useState("");
 
   // Raw state from database
   const [sales, setSales] = useState([]);
@@ -25,7 +28,6 @@ export default function Dashboard() {
       try {
         setLoading(true);
         
-        // Use getSession() instead of getUser() to wait for restored token
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
         if (sessionError || !session?.user) {
@@ -34,6 +36,7 @@ export default function Dashboard() {
         }
 
         const user = session.user;
+        if (isMounted) setCurrentUserId(user.id);
 
         // Step A: Check if user is business owner
         let { data: biz } = await supabase
@@ -78,6 +81,26 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Handler for subscribing to weekly push notifications
+  const handleEnablePush = useCallback(async () => {
+    if (!currentUserId || !businessInfo?.id) return;
+    setPushStatus("Enabling...");
+    try {
+      await subscribeToPushNotifications(currentUserId, businessInfo.id);
+      setPushStatus("Active");
+    } catch (err) {
+      console.error("Failed to enable push:", err);
+      setPushStatus("Failed");
+    }
+  }, [currentUserId, businessInfo?.id]);
+
+  // Automatically attempt push subscription when user & business are ready
+  useEffect(() => {
+    if (currentUserId && businessInfo?.id) {
+      subscribeToPushNotifications(currentUserId, businessInfo.id);
+    }
+  }, [currentUserId, businessInfo?.id]);
+
   // 2. Fetch table data for the specific business
   const fetchDashboardData = useCallback(async (bizId) => {
     if (!bizId) return;
@@ -111,7 +134,6 @@ export default function Dashboard() {
 
     fetchDashboardData(bizId);
 
-    // Channel specific to this business to prevent cross-tenant triggers
     const channel = supabase
       .channel(`realtime-dashboard-${bizId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
@@ -257,7 +279,14 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <div className="flex items-center gap-3 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+          <button
+            onClick={handleEnablePush}
+            className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 border border-emerald-200 transition"
+          >
+            🔔 {pushStatus === "Active" ? "Notifications On" : pushStatus || "Enable Weekly Push"}
+          </button>
+
           <button
             onClick={handleFetchDailySummary}
             disabled={loadingSummary}
