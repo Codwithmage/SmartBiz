@@ -93,9 +93,10 @@ export function BusinessProvider({ children }) {
     setBusiness(null);
   }, []);
 
-  const value = useMemo(
+ const value = useMemo(
     () => ({
       business,
+      setBusiness, // <-- Export setBusiness here
       loading,
       businessLoading: loading,
       loadBusiness,
@@ -104,7 +105,7 @@ export function BusinessProvider({ children }) {
     }),
     [business, loading, loadBusiness, refreshBusiness, clearBusiness]
   );
-
+  
   return (
     <BusinessContext.Provider value={value}>
       {children}

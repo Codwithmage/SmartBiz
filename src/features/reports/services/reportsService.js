@@ -14,8 +14,8 @@ export async function fetchReportData({ businessId, currency = "NGN", reportType
           .from("sales")
           .select("*")
           .eq("business_id", businessId)
-          .gte("created_at", `${startDate}T00:00:00Z`)
-          .lte("created_at", `${endDate}T23:59:59Z`)
+          .gte("created_at", `${startDate}T00:00:00.000Z`)
+          .lte("created_at", `${endDate}T23:59:59.999Z`)
           .order("created_at", { ascending: false });
 
         if (error) return { data: [], error };
@@ -42,8 +42,8 @@ export async function fetchReportData({ businessId, currency = "NGN", reportType
           .from("expenses")
           .select("*")
           .eq("business_id", businessId)
-          .gte("created_at", `${startDate}T00:00:00Z`)
-          .lte("created_at", `${endDate}T23:59:59Z`)
+          .gte("created_at", `${startDate}T00:00:00.000Z`)
+          .lte("created_at", `${endDate}T23:59:59.999Z`)
           .order("created_at", { ascending: false });
 
         if (error) return { data: [], error };
@@ -64,9 +64,10 @@ export async function fetchReportData({ businessId, currency = "NGN", reportType
       }
 
       case "inventory": {
+        // Included relation query for category name if foreign key exists
         const { data, error } = await supabase
           .from("products")
-          .select("*")
+          .select("*, categories(name)")
           .eq("business_id", businessId)
           .order("name", { ascending: true });
 
@@ -77,9 +78,12 @@ export async function fetchReportData({ businessId, currency = "NGN", reportType
           const cost = Number(prod.cost_price || 0);
           const price = Number(prod.selling_price || prod.price || 0);
 
+          // Checks category object join, string column, or defaults to Uncategorized
+          const categoryName = prod.categories?.name || prod.category_name || prod.category || "Uncategorized";
+
           return {
             "Product Name": prod.name || "Unnamed Item",
-            "Category": prod.category || "Uncategorized",
+            "Category": categoryName,
             "In Stock": qty.toLocaleString(),
             "Unit Cost": formatCurrency(cost, currency),
             "Unit Price": formatCurrency(price, currency),
@@ -97,14 +101,14 @@ export async function fetchReportData({ businessId, currency = "NGN", reportType
             .from("sales")
             .select("*")
             .eq("business_id", businessId)
-            .gte("created_at", `${startDate}T00:00:00Z`)
-            .lte("created_at", `${endDate}T23:59:59Z`),
+            .gte("created_at", `${startDate}T00:00:00.000Z`)
+            .lte("created_at", `${endDate}T23:59:59.999Z`),
           supabase
             .from("expenses")
             .select("*")
             .eq("business_id", businessId)
-            .gte("created_at", `${startDate}T00:00:00Z`)
-            .lte("created_at", `${endDate}T23:59:59Z`),
+            .gte("created_at", `${startDate}T00:00:00.000Z`)
+            .lte("created_at", `${endDate}T23:59:59.999Z`),
         ]);
 
         const totalRevenue =

@@ -16,13 +16,10 @@ export default function InventoryAnalytics() {
       setLoading(true);
 
       try {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
         const sixtyDaysAgo = new Date();
         sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
 
-        // 1. Fetch All Active Products for this Business
+        // 1. Fetch All Active Products for THIS Business
         const { data: products, error: prodError } = await supabase
           .from("products")
           .select("id, name, quantity, cost_price, selling_price")
@@ -30,10 +27,25 @@ export default function InventoryAnalytics() {
 
         if (prodError) throw prodError;
 
-        // 2. Fetch Recent Sales Items (Last 60 Days)
+        if (!products || products.length === 0) {
+          setBestSellers([]);
+          setDeadStock([]);
+          setTotalCapitalTiedUp(0);
+          setLoading(false);
+          return;
+        }
+
+        // Create a quick lookup map for product prices/costs
+        const productMap = new Map();
+        products.forEach((p) => productMap.set(p.id, p));
+
+        const productIds = products.map((p) => p.id);
+
+        // 2. Fetch Recent Sales Items (removed cost_price column query)
         const { data: salesItems, error: salesError } = await supabase
           .from("sale_items")
-          .select("product_id, quantity, created_at, unit_price, cost_price")
+          .select("product_id, quantity, unit_price, created_at")
+          .in("product_id", productIds)
           .gte("created_at", sixtyDaysAgo.toISOString());
 
         if (salesError) throw salesError;
@@ -42,36 +54,41 @@ export default function InventoryAnalytics() {
         const salesStats = {};
         salesItems?.forEach((item) => {
           const pid = item.product_id;
+          const matchedProduct = productMap.get(pid);
+
           if (!salesStats[pid]) {
-            salesStats[pid] = { totalSold: 0, revenue: 0, profit: 0, lastSaleDate: item.created_at };
+            salesStats[pid] = { totalSold: 0, revenue: 0, profit: 0 };
           }
 
           const qty = Number(item.quantity || 0);
           const price = Number(item.unit_price || 0);
-          const cost = Number(item.cost_price || 0);
+          // Fall back to product cost price if not stored on sale item
+          const cost = Number(matchedProduct?.cost_price || 0);
 
           salesStats[pid].totalSold += qty;
           salesStats[pid].revenue += qty * price;
           salesStats[pid].profit += qty * (price - cost);
-
-          if (new Date(item.created_at) > new Date(salesStats[pid].lastSaleDate)) {
-            salesStats[pid].lastSaleDate = item.created_at;
-          }
         });
 
-        // 4. Calculate Best Sellers (Top units sold in last 30 days)
+        // 4. Calculate Best Sellers (Top units sold in last 60 days)
         const bestSellerList = products
-          .map((prod) => ({
-            ...prod,
-            unitsSold: salesStats[prod.id]?.totalSold || 0,
-            totalProfit: salesStats[prod.id]?.profit || 0,
-            margin: prod.selling_price > 0 ? (((prod.selling_price - prod.cost_price) / prod.selling_price) * 100).toFixed(0) : 0,
-          }))
+          .map((prod) => {
+            const cost = Number(prod.cost_price || 0);
+            const selling = Number(prod.selling_price || 0);
+            const margin = selling > 0 ? (((selling - cost) / selling) * 100).toFixed(0) : 0;
+
+            return {
+              ...prod,
+              unitsSold: salesStats[prod.id]?.totalSold || 0,
+              totalProfit: salesStats[prod.id]?.profit || 0,
+              margin,
+            };
+          })
           .filter((p) => p.unitsSold > 0)
           .sort((a, b) => b.unitsSold - a.unitsSold)
-          .slice(0, 5); // Top 5
+          .slice(0, 5);
 
-        // 5. Calculate Dead Stock (In stock, but 0 sales in last 60 days)
+        // 5. Calculate Dead Stock (In stock, 0 sales in last 60 days)
         let totalTiedCapital = 0;
         const deadStockList = products
           .filter((prod) => {
@@ -80,7 +97,7 @@ export default function InventoryAnalytics() {
             return hasStock && recentSales === 0;
           })
           .map((prod) => {
-            const tiedCapital = Number(prod.quantity) * Number(prod.cost_price || 0);
+            const tiedCapital = Number(prod.quantity || 0) * Number(prod.cost_price || 0);
             totalTiedCapital += tiedCapital;
             return { ...prod, tiedCapital };
           })
@@ -97,7 +114,7 @@ export default function InventoryAnalytics() {
     }
 
     fetchAnalytics();
-  }, [business]);
+  }, [business?.id]);
 
   if (loading) return <div className="p-4 text-gray-500">Calculating inventory metrics...</div>;
 
@@ -121,7 +138,7 @@ export default function InventoryAnalytics() {
         {/* Best Sellers Card */}
         <div className="rounded-xl border bg-white p-5 shadow-sm">
           <h3 className="font-bold text-gray-900 text-lg mb-4 flex items-center gap-2">
-            🔥 Best Sellers <span className="text-xs font-normal text-gray-500">(Last 30 Days)</span>
+            🔥 Best Sellers <span className="text-xs font-normal text-gray-500">(Last 60 Days)</span>
           </h3>
 
           {bestSellers.length === 0 ? (

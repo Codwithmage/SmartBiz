@@ -1,9 +1,12 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 
-// Auth & Business
+// Landing Page & Auth Routes
+import LandingPage from "../features/landing/pages/LandingPage"; // Add landing page import
 import Login from "../features/auth/pages/Login";
 import Register from "../features/auth/pages/Register";
 import ForgotPassword from "../features/auth/pages/ForgotPassword";
+
+// Onboarding & Dashboard Components
 import Dashboard from "../features/dashboard/pages/Dashboard";
 import CreateBusiness from "../features/business/pages/CreateBusiness";
 import AppEntry from "../features/app/pages/AppEntry";
@@ -19,26 +22,21 @@ import AddCategoryPage from "../features/categories/pages/AddCategoryPage";
 // Context Providers
 import { CategoryProvider } from "../context/CategoryContext";
 
-// Sales & Expenses
+// Sales, Expenses, Reports & Settings
 import SalesPage from "../features/sales/pages/SalesPage";
 import ExpensesPage from "../features/expenses/pages/ExpensesPage";
-
-// Reports
 import ReportsPage from "../features/reports/pages/ReportsPage";
-
-// Settings
 import SettingsPage from "../features/settings/SettingsPage";
+import TeamPage from "../features/teams/pages/TeamPage";
 
 // Guards & Layout
 import ProtectedRoute from "../components/guards/ProtectedRoute";
 import AppLayout from "../components/layout/AppLayout";
 
-// Import TeamPage
-import TeamPage from "../features/teams/pages/TeamPage";
-
 const router = createBrowserRouter([
-  // Public Auth Routes
-  { path: "/", element: <Login /> },
+  // Public Routes
+  { path: "/", element: <LandingPage /> },
+  { path: "/login", element: <Login /> },
   { path: "/register", element: <Register /> },
   { path: "/forgot-password", element: <ForgotPassword /> },
 

@@ -425,10 +425,11 @@ function SalesPage() {
               </div>
             </div>
 
-            <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+            {/* Scrollable Container with Sticky Table Header */}
+            <div className="max-h-[500px] overflow-y-auto overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0 border rounded-lg">
               <table className="w-full text-left text-sm border-collapse min-w-[700px]">
-                <thead>
-                  <tr className="border-b bg-gray-50 text-xs font-semibold uppercase text-gray-600">
+                <thead className="sticky top-0 z-10 border-b bg-gray-50 text-xs font-semibold uppercase text-gray-600">
+                  <tr>
                     <th className="py-3 px-3">Sale #</th>
                     <th className="py-3 px-3">Date</th>
                     <th className="py-3 px-3">Customer</th>
@@ -778,7 +779,7 @@ function SalesPage() {
             <div className="border-b pb-3 flex justify-between items-start">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">
-                  {business?.name || "Sales Receipt"}
+                  {business?.business_name || business?.name || "Sales Receipt"}
                 </h2>
                 <h3 className="text-sm font-semibold text-gray-700">Receipt Details</h3>
                 <p className="text-xs text-gray-500">

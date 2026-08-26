@@ -5,6 +5,6 @@
     "jsx": "react-jsx",
     "checkJs": false
   },
-  "include": ["src"],
+  "include": ["src", "supabase/functions"],
   "exclude": ["node_modules", "supabase"]
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import supabase from "../../supabase/SupabaseClient";
+import { useBusiness } from "../../context/BusinessContext"; // <-- Added Business Context Hook
 
-// Currency options list
 const CURRENCY_OPTIONS = [
   { code: "NGN", label: "NGN - Nigerian Naira (₦)", symbol: "₦" },
   { code: "USD", label: "USD - US Dollar ($)", symbol: "$" },
@@ -13,16 +13,15 @@ const CURRENCY_OPTIONS = [
 ];
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState("PROFILE"); // PROFILE | FINANCIAL | CATEGORIES | ACCOUNT
+  const { refreshBusiness } = useBusiness(); // <-- Grab refresh helper
+  const [activeTab, setActiveTab] = useState("PROFILE");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState({ type: "", text: "" });
 
-  // User & Business State
   const [user, setUser] = useState(null);
   const [businessId, setBusinessId] = useState(null);
 
-  // Form States
   const [profileForm, setProfileForm] = useState({
     name: "",
     email: "",
@@ -46,9 +45,6 @@ export default function SettingsPage() {
     confirmPassword: "",
   });
 
-  // ----------------------------------------------------
-  // 1. FETCH ALL INITIAL DATA (WITH BUSINESS FILTERING)
-  // ----------------------------------------------------
   const fetchSettings = useCallback(async () => {
     try {
       setLoading(true);
@@ -60,7 +56,6 @@ export default function SettingsPage() {
 
       let activeBusinessId = null;
 
-      // Try fetching business record if user is Owner
       const { data: busData } = await supabase
         .from("businesses")
         .select("*")
@@ -70,7 +65,7 @@ export default function SettingsPage() {
       if (busData) {
         activeBusinessId = busData.id;
         setProfileForm({
-          name: busData.name || "",
+          name: busData.business_name || busData.name || "",
           email: busData.email || currentUser.email || "",
           phone: busData.phone || "",
           address: busData.address || "",
@@ -84,7 +79,6 @@ export default function SettingsPage() {
           default_payment_method: busData.default_payment_method || "CASH",
         });
       } else {
-        // Fallback for Managers/Cashiers: fetch business_id from profiles
         const { data: profile } = await supabase
           .from("profiles")
           .select("business_id")
@@ -97,7 +91,6 @@ export default function SettingsPage() {
 
       setBusinessId(activeBusinessId);
 
-      // Fetch Categories strictly for this business
       if (activeBusinessId) {
         const { data: catData, error: catError } = await supabase
           .from("expense_categories")
@@ -123,7 +116,7 @@ export default function SettingsPage() {
   }, [fetchSettings]);
 
   // ----------------------------------------------------
-  // 2. SAVE PROFILE SETTINGS
+  // SAVE PROFILE SETTINGS (SYNC BOTH NAME FIELDS & REFRESH CONTEXT)
   // ----------------------------------------------------
   const handleSaveProfile = async (e) => {
     e.preventDefault();
@@ -134,6 +127,7 @@ export default function SettingsPage() {
       const payload = {
         owner_id: user.id,
         name: profileForm.name,
+        business_name: profileForm.name, // Write to both database fields
         email: profileForm.email,
         phone: profileForm.phone,
         address: profileForm.address,
@@ -149,6 +143,9 @@ export default function SettingsPage() {
       if (error) throw error;
       if (data) setBusinessId(data.id);
 
+      // Trigger global state refresh across all components (Sales, Receipts, etc.)
+      await refreshBusiness();
+
       setMessage({ type: "success", text: "Business profile updated successfully!" });
     } catch (err) {
       setMessage({ type: "error", text: `Failed to save profile: ${err.message}` });
@@ -157,9 +154,6 @@ export default function SettingsPage() {
     }
   };
 
-  // ----------------------------------------------------
-  // 3. SAVE FINANCIAL SETTINGS
-  // ----------------------------------------------------
   const handleSaveFinancial = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -180,6 +174,8 @@ export default function SettingsPage() {
 
       if (error) throw error;
 
+      await refreshBusiness();
+
       setMessage({ type: "success", text: "Financial preferences updated successfully!" });
     } catch (err) {
       setMessage({ type: "error", text: `Failed to save financial settings: ${err.message}` });
@@ -188,9 +184,6 @@ export default function SettingsPage() {
     }
   };
 
-  // ----------------------------------------------------
-  // 4. CATEGORY ACTIONS (BUSINESS SCOPED)
-  // ----------------------------------------------------
   const handleAddCategory = async (e) => {
     e.preventDefault();
     if (!newCatName.trim()) return;
@@ -254,9 +247,6 @@ export default function SettingsPage() {
     }
   };
 
-  // ----------------------------------------------------
-  // 5. ACCOUNT & PASSWORD UPDATE
-  // ----------------------------------------------------
   const handleUpdatePassword = async (e) => {
     e.preventDefault();
     setMessage({ type: "", text: "" });
@@ -296,7 +286,6 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 px-2 sm:px-0 max-w-5xl mx-auto">
-      {/* Header */}
       <div>
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Settings</h1>
         <p className="text-xs sm:text-sm text-gray-500">
@@ -304,7 +293,6 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* Alert Banner */}
       {message.text && (
         <div
           className={`rounded-lg p-3 text-xs sm:text-sm border ${
@@ -317,7 +305,6 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Tab Navigation */}
       <div className="flex border-b border-gray-200 overflow-x-auto scrollbar-none">
         <button
           onClick={() => setActiveTab("PROFILE")}
@@ -361,7 +348,6 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      {/* TAB 1: BUSINESS PROFILE */}
       {activeTab === "PROFILE" && (
         <form onSubmit={handleSaveProfile} className="bg-white rounded-xl border p-4 sm:p-6 shadow-sm space-y-4">
           <h2 className="text-base sm:text-lg font-bold text-gray-900 border-b pb-2">
@@ -450,7 +436,6 @@ export default function SettingsPage() {
         </form>
       )}
 
-      {/* TAB 2: FINANCIAL & CURRENCY */}
       {activeTab === "FINANCIAL" && (
         <form onSubmit={handleSaveFinancial} className="bg-white rounded-xl border p-4 sm:p-6 shadow-sm space-y-4">
           <h2 className="text-base sm:text-lg font-bold text-gray-900 border-b pb-2">
@@ -539,7 +524,6 @@ export default function SettingsPage() {
         </form>
       )}
 
-      {/* TAB 3: CATEGORIES */}
       {activeTab === "CATEGORIES" && (
         <div className="bg-white rounded-xl border p-4 sm:p-6 shadow-sm space-y-4">
           <h2 className="text-base sm:text-lg font-bold text-gray-900 border-b pb-2">
@@ -600,7 +584,6 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* TAB 4: ACCOUNT & SECURITY */}
       {activeTab === "ACCOUNT" && (
         <div className="space-y-6">
           <div className="bg-white rounded-xl border p-4 sm:p-6 shadow-sm space-y-3">

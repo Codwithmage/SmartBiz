@@ -9,9 +9,8 @@ import InventoryAnalytics from "../components/InventoryAnalytics";
 const REPORT_TABS = [
   { id: "sales", label: "Sales Report" },
   { id: "expenses", label: "Expense Report" },
-  { id: "profit", label: "Profit & Loss" },
   { id: "inventory", label: "Inventory Valuation" },
-  { id: "analytics", label: "Inventory Health" }, // New Analytics Tab
+  { id: "analytics", label: "Inventory Health" },
 ];
 
 export default function ReportsPage() {
@@ -24,14 +23,14 @@ export default function ReportsPage() {
   const [endDate, setEndDate] = useState(initialDates.endDate);
 
   const [reportData, setReportData] = useState([]);
-  const [summary, setSummary] = useState({ revenue: 0, expenses: 0, profit: 0 });
+  const [summary, setSummary] = useState({ revenue: 0, expenses: 0 });
   const [loading, setLoading] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!business?.id || activeTab === "analytics") return; // Analytics tab loads its own data
     setLoading(true);
 
-    const { data, summary: pnlSummary, error } = await fetchReportData({
+    const { data, summary: reportSummary, error } = await fetchReportData({
       businessId: business.id,
       currency: business.currency || "NGN",
       reportType: activeTab,
@@ -41,7 +40,7 @@ export default function ReportsPage() {
 
     if (!error) {
       setReportData(data || []);
-      if (pnlSummary) setSummary(pnlSummary);
+      if (reportSummary) setSummary(reportSummary);
     }
     setLoading(false);
   }, [business?.id, business?.currency, activeTab, startDate, endDate]);
