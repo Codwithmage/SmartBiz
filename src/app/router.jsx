@@ -1,7 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 
 // Landing Page & Auth Routes
-import LandingPage from "../features/landing/pages/LandingPage"; // Add landing page import
+import LandingPage from "../features/Landing/pages/LandingPage"; // Add landing page import
 import Login from "../features/auth/pages/Login";
 import Register from "../features/auth/pages/Register";
 import ForgotPassword from "../features/auth/pages/ForgotPassword";
