@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
 import { useBusiness } from "../../../context/BusinessContext";
+import { offlineDb } from "../../../db/offlineDb";
 
 // Date Helpers
 const isToday = (dateString) => {
@@ -48,7 +49,7 @@ const getSymbolFromCurrency = (currencyCode) => {
 };
 
 export default function ExpensesPage() {
-  const { business } = useBusiness(); // Use central business context
+  const { business } = useBusiness();
 
   const [activeTab, setActiveTab] = useState("OVERVIEW");
   const [expenses, setExpenses] = useState([]);
@@ -56,7 +57,7 @@ export default function ExpensesPage() {
   const [currencySymbol, setCurrencySymbol] = useState("₦");
   const [isLoading, setIsLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
-  const [userRole, setUserRole] = useState(""); // Track user role
+  const [userRole, setUserRole] = useState("");
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState(null);
@@ -71,7 +72,7 @@ export default function ExpensesPage() {
   const [filterPaymentMethod, setFilterPaymentMethod] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
 
-  // Permission Flags (Only Owners & Admins can edit/delete)
+  // Permission Flags
   const canEdit = ["owner", "admin", "super_admin"].includes(userRole);
   const canDelete = ["owner", "admin", "super_admin"].includes(userRole);
 
@@ -106,15 +107,14 @@ export default function ExpensesPage() {
     [categories]
   );
 
-  // ----------------------------------------------------
-  // HELPER: FETCH BUSINESS INFO AND ROLE FOR USERS
-  // ----------------------------------------------------
+  // Helper to fetch business info & user role
   const getBusinessInfo = useCallback(async () => {
     try {
+      if (!navigator.onLine) return business || null;
+
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       if (userError || !user) return business || null;
 
-      // Get profile (business_id AND role)
       const { data: profile } = await supabase
         .from("profiles")
         .select("business_id, role")
@@ -141,9 +141,7 @@ export default function ExpensesPage() {
     }
   }, [business]);
 
-  // ----------------------------------------------------
-  // 1. FETCH DATA & BUSINESS CURRENCY FROM SUPABASE
-  // ----------------------------------------------------
+  // Fetch data with Dexie offline fallback
   const fetchAllData = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -152,7 +150,6 @@ export default function ExpensesPage() {
       const activeBiz = await getBusinessInfo();
       const businessId = activeBiz?.id;
 
-      // Resolve Currency
       if (activeBiz) {
         const rawCurrency =
           activeBiz.currency_symbol || activeBiz.currency || activeBiz.currency_code;
@@ -160,7 +157,20 @@ export default function ExpensesPage() {
         if (symbol) setCurrencySymbol(symbol);
       }
 
-      // Build fetch queries
+      if (!navigator.onLine) {
+        if (businessId) {
+          const localExpenses = await offlineDb.expenses
+            .where({ business_id: businessId })
+            .toArray();
+          setExpenses(localExpenses || []);
+        } else {
+          const localExpenses = await offlineDb.expenses.toArray();
+          setExpenses(localExpenses || []);
+        }
+        setIsLoading(false);
+        return;
+      }
+
       let expensesQuery = supabase
         .from("expenses")
         .select("*")
@@ -171,7 +181,6 @@ export default function ExpensesPage() {
         .select("*")
         .order("name", { ascending: true });
 
-      // Scope results strictly to the assigned business
       if (businessId) {
         expensesQuery = expensesQuery.eq("business_id", businessId);
         categoriesQuery = categoriesQuery.or(
@@ -187,11 +196,17 @@ export default function ExpensesPage() {
       if (expensesRes.error) throw expensesRes.error;
       if (categoriesRes.error) throw categoriesRes.error;
 
+      if (expensesRes.data && expensesRes.data.length > 0) {
+        await offlineDb.expenses.bulkPut(
+          expensesRes.data.map((item) => ({ ...item, synced: 1 }))
+        );
+      }
+
       setExpenses(expensesRes.data || []);
       setCategories(categoriesRes.data || []);
     } catch (err) {
       console.error("Failed to load expenses/categories:", err);
-      setErrorMessage(`Database Error: ${err.message}`);
+      setErrorMessage(`Error loading data: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -201,9 +216,7 @@ export default function ExpensesPage() {
     fetchAllData();
   }, [fetchAllData]);
 
-  // ----------------------------------------------------
-  // 2. STATS & COMPUTED FILTERS
-  // ----------------------------------------------------
+  // Calculated Stats
   const overviewStats = useMemo(() => {
     let totalExpenses = 0;
     let thisMonth = 0;
@@ -256,9 +269,6 @@ export default function ExpensesPage() {
     });
   }, [expenses, searchQuery, filterDate, filterCategory, filterPaymentMethod, filterStatus, getCategoryName]);
 
-  // ----------------------------------------------------
-  // 3. EXPENSE ACTIONS (SAVE / EDIT / DELETE)
-  // ----------------------------------------------------
   const resetExpenseForm = () => {
     const activeCat = categories.find((c) => c.active !== false);
     setExpenseForm({
@@ -297,6 +307,29 @@ export default function ExpensesPage() {
         ...(businessId && { business_id: businessId }),
       };
 
+      if (!navigator.onLine) {
+        if (editingExpense) {
+          const updatedLocal = { ...editingExpense, ...payload, synced: 0 };
+          await offlineDb.expenses.put(updatedLocal);
+          setExpenses((prev) =>
+            prev.map((item) => (item.id === editingExpense.id ? updatedLocal : item))
+          );
+        } else {
+          const newLocal = {
+            ...payload,
+            id: `offline_${Date.now()}`,
+            created_at: new Date().toISOString(),
+            synced: 0,
+          };
+          await offlineDb.expenses.add(newLocal);
+          setExpenses((prev) => [newLocal, ...prev]);
+        }
+        resetExpenseForm();
+        setIsAddModalOpen(false);
+        setEditingExpense(null);
+        return;
+      }
+
       if (editingExpense) {
         const { data, error } = await supabase
           .from("expenses")
@@ -306,6 +339,7 @@ export default function ExpensesPage() {
           .single();
 
         if (error) throw error;
+        await offlineDb.expenses.put({ ...data, synced: 1 });
         setExpenses((prev) =>
           prev.map((item) => (item.id === editingExpense.id ? data : item))
         );
@@ -317,6 +351,7 @@ export default function ExpensesPage() {
           .single();
 
         if (error) throw error;
+        await offlineDb.expenses.put({ ...data, synced: 1 });
         setExpenses((prev) => [data, ...prev]);
       }
 
@@ -333,9 +368,17 @@ export default function ExpensesPage() {
     if (!confirm("Are you sure you want to delete this expense record?")) return;
 
     try {
+      if (!navigator.onLine) {
+        await offlineDb.expenses.delete(id);
+        setExpenses((prev) => prev.filter((item) => item.id !== id));
+        setSelectedExpense(null);
+        return;
+      }
+
       const { error } = await supabase.from("expenses").delete().eq("id", id);
       if (error) throw error;
 
+      await offlineDb.expenses.delete(id);
       setExpenses((prev) => prev.filter((item) => item.id !== id));
       setSelectedExpense(null);
     } catch (err) {
@@ -361,9 +404,6 @@ export default function ExpensesPage() {
     setIsAddModalOpen(true);
   };
 
-  // ----------------------------------------------------
-  // 4. CATEGORY ACTIONS (SAVE / TOGGLE / DELETE)
-  // ----------------------------------------------------
   const handleSaveCategory = async (e) => {
     e.preventDefault();
     if (!categoryNameInput.trim()) return;
@@ -453,13 +493,19 @@ export default function ExpensesPage() {
 
   return (
     <div className="space-y-6 px-2 sm:px-0">
+      {!navigator.onLine && (
+        <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 border border-amber-200">
+          You are working offline. New expenses will automatically sync to Supabase once connected.
+        </div>
+      )}
+
       {errorMessage && (
         <div className="rounded-lg bg-red-50 p-3 text-xs text-red-600 border border-red-200">
           {errorMessage}
         </div>
       )}
 
-      {/* Header */}
+      {/* Navigation & Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Expenses</h1>
@@ -515,7 +561,7 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* Tab 1: OVERVIEW */}
+      {/* OVERVIEW TAB */}
       {activeTab === "OVERVIEW" && (
         <div className="space-y-6">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -565,7 +611,14 @@ export default function ExpensesPage() {
                 overviewStats.recentExpenses.map((exp) => (
                   <div key={exp.id} className="py-3 flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-semibold text-gray-900">{exp.title}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-gray-900">{exp.title}</p>
+                        {exp.synced === 0 && (
+                          <span className="text-[10px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">
+                            Pending Sync
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-gray-500">
                         {getCategoryName(exp.category_id || exp.category, exp)} •{" "}
                         {exp.date ? new Date(exp.date).toLocaleDateString() : ""}
@@ -593,7 +646,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Tab 2: ALL EXPENSES */}
+      {/* ALL EXPENSES TAB */}
       {activeTab === "ALL_EXPENSES" && (
         <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -667,7 +720,14 @@ export default function ExpensesPage() {
                   filteredExpenses.map((exp) => (
                     <tr key={exp.id} className="hover:bg-gray-50">
                       <td className="py-3 px-3">
-                        <p className="font-semibold text-gray-900">{exp.title}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-semibold text-gray-900">{exp.title}</p>
+                          {exp.synced === 0 && (
+                            <span className="text-[9px] font-bold text-amber-600 bg-amber-100 px-1 py-0.2 rounded">
+                              Pending Sync
+                            </span>
+                          )}
+                        </div>
                         <p className="text-[11px] text-gray-500">{exp.vendor || "No Vendor"}</p>
                       </td>
                       <td className="py-3 px-3">{getCategoryName(exp.category_id || exp.category, exp)}</td>
@@ -706,7 +766,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Tab 3: CATEGORIES */}
+      {/* CATEGORIES TAB */}
       {activeTab === "CATEGORIES" && (
         <div className="rounded-xl border bg-white p-4 sm:p-5 shadow-sm space-y-4">
           <div className="flex items-center justify-between border-b pb-3">
@@ -779,7 +839,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Add / Edit Expense Modal */}
+      {/* Expense Modal */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
@@ -968,7 +1028,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Add / Edit Category Modal */}
+      {/* Category Modal */}
       {isCategoryModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">
@@ -1019,7 +1079,7 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      {/* Expense Details Modal */}
+      {/* Expense Detail View Modal */}
       {selectedExpense && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3 sm:p-4">
           <div className="w-full max-w-md rounded-xl bg-white p-4 sm:p-6 shadow-xl space-y-4">

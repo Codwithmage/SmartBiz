@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import supabase from "../../../supabase/SupabaseClient";
-import { subscribeToPushNotifications } from "../../../utils/pushNotifications"; // Adjust path if needed
+import { subscribeToPushNotifications } from "../../../utils/pushNotifications";
+import { offlineDb } from "../../../db/offlineDb";
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -38,14 +39,14 @@ export default function Dashboard() {
         const user = session.user;
         if (isMounted) setCurrentUserId(user.id);
 
-        // Step A: Check if user is business owner
+        // Check if user is business owner
         let { data: biz } = await supabase
           .from("businesses")
           .select("*")
           .eq("owner_id", user.id)
           .maybeSingle();
 
-        // Step B: Check profile if staff
+        // Check profile if staff
         if (!biz) {
           const { data: profile } = await supabase
             .from("profiles")
@@ -147,33 +148,6 @@ export default function Dashboard() {
     };
   }, [businessInfo?.id, fetchDashboardData]);
 
-  // Fetch Daily Summary
-  const handleFetchDailySummary = useCallback(async () => {
-    if (!businessInfo?.id) return;
-    setLoadingSummary(true);
-
-    try {
-      const { data, error } = await supabase.rpc("get_daily_business_summary", {
-        p_business_id: businessInfo.id,
-      });
-
-      if (error) throw error;
-      if (data && data.length > 0) {
-        setDailySummary(data[0]);
-      }
-    } catch (err) {
-      console.error("Failed to fetch daily summary:", err.message);
-    } finally {
-      setLoadingSummary(false);
-    }
-  }, [businessInfo?.id]);
-
-  useEffect(() => {
-    if (businessInfo?.id) {
-      handleFetchDailySummary();
-    }
-  }, [businessInfo?.id, handleFetchDailySummary]);
-
   // Lookup map for products
   const productMap = useMemo(() => {
     const map = new Map();
@@ -181,7 +155,7 @@ export default function Dashboard() {
     return map;
   }, [products]);
 
-  // Metrics calculation
+  // Metrics calculation based on selected timeframe
   const metrics = useMemo(() => {
     const now = new Date();
 
@@ -242,6 +216,152 @@ export default function Dashboard() {
     return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, netProfit };
   }, [sales, services, expenses, timeframe, productMap]);
 
+  // Strict TODAY metrics for accurate EOD Fallbacks
+  const todayMetrics = useMemo(() => {
+    const now = new Date();
+    const isToday = (dateString) => {
+      if (!dateString) return false;
+      return new Date(dateString).toDateString() === now.toDateString();
+    };
+
+    const todaysSales = sales.filter((s) => isToday(s.created_at || s.date));
+    const todaysServices = services.filter((s) => isToday(s.created_at || s.date));
+    const todaysExpenses = expenses.filter((e) => isToday(e.created_at || e.date));
+
+    const totalProductSales = todaysSales.reduce(
+      (acc, sale) => acc + Number(sale.amount || sale.total_amount || sale.unit_price || 0),
+      0
+    );
+    const totalServicesRevenue = todaysServices.reduce(
+      (acc, service) => acc + Number(service.price || service.amount || service.total_amount || 0),
+      0
+    );
+    const totalSales = totalProductSales + totalServicesRevenue;
+
+    const totalExpenses = todaysExpenses.reduce(
+      (acc, expense) => acc + Number(expense.amount || 0),
+      0
+    );
+
+    const grossProductProfit = todaysSales.reduce((acc, sale) => {
+      const product = productMap.get(sale.product_id);
+      const qty = Number(sale.quantity || 1);
+      const saleAmount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
+      const unitCost = Number(sale.cost_price || product?.cost_price || 0);
+      return acc + (saleAmount - unitCost * qty);
+    }, 0);
+
+    const netServiceProfit = todaysServices.reduce((acc, service) => {
+      const price = Number(service.price || service.amount || service.total_amount || 0);
+      const cost = Number(service.cost || service.cost_price || 0);
+      return acc + (price - cost);
+    }, 0);
+
+    const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
+
+    // Calculate Top Item Sold Today dynamically from sales state
+    const itemCounts = {};
+    todaysSales.forEach((s) => {
+      const product = productMap.get(s.product_id);
+      const name = s.item_name || s.product_name || product?.name || s.name || "Custom Sale";
+      const qty = Number(s.quantity || s.qty || 1);
+      itemCounts[name] = (itemCounts[name] || 0) + qty;
+    });
+
+    let topItemName = "Custom Sale";
+    let topItemQty = 0;
+
+    Object.entries(itemCounts).forEach(([name, count]) => {
+      if (count > topItemQty) {
+        topItemQty = count;
+        topItemName = name;
+      }
+    });
+
+    return { totalSales, netProfit, topItemName, topItemQty };
+  }, [sales, services, expenses, productMap]);
+
+  // Guaranteed Daily Summary Resolver
+  const handleFetchDailySummary = useCallback(async () => {
+    if (!businessInfo?.id) return;
+    setLoadingSummary(true);
+
+    let rpcSummary = null;
+    let pendingOfflineRevenue = 0;
+    let pendingOfflineProfit = 0;
+
+    try {
+      if (navigator.onLine) {
+        const { data, error } = await supabase.rpc("get_daily_business_summary", {
+          p_business_id: businessInfo.id,
+        });
+
+        if (error) {
+          console.warn("RPC Error (Falling back to calculated local state):", error.message);
+        } else if (data && data.length > 0) {
+          rpcSummary = data[0];
+        }
+      }
+
+      try {
+        const allLocalSales = await offlineDb.sales.toArray();
+        const currentBizId = String(businessInfo.id);
+
+        const todaysUnsyncedSales = allLocalSales.filter((sale) => {
+          const saleBizId = String(sale.business_id || sale.businessId || "");
+          const matchesBiz = !saleBizId || saleBizId === currentBizId;
+          const isUnsynced = sale.synced === 0 || sale.synced === false || sale.synced === undefined || sale.synced === null;
+
+          return matchesBiz && isUnsynced;
+        });
+
+        todaysUnsyncedSales.forEach((sale) => {
+          const amount = Number(sale.amount || sale.total_amount || sale.total || sale.price || sale.unit_price || 0);
+          const cost = Number(sale.cost_price || sale.cost || 0);
+          const qty = Number(sale.quantity || sale.qty || 1);
+
+          pendingOfflineRevenue += amount;
+          pendingOfflineProfit += (amount - cost * qty);
+        });
+
+      } catch (dexieErr) {
+        console.error("Dexie read error during EOD execution:", dexieErr);
+      }
+    } catch (err) {
+      console.error("Failed to fetch daily summary RPC:", err.message);
+    } finally {
+      // Force construct a valid summary object so the card NEVER disappears
+      const hasValidRpcData = rpcSummary && typeof rpcSummary.total_revenue !== "undefined";
+      const rpcRev = hasValidRpcData ? Number(rpcSummary.total_revenue || 0) : 0;
+      const rpcProfit = hasValidRpcData ? Number(rpcSummary.net_profit || 0) : 0;
+
+      let topName = rpcSummary?.top_item_name;
+      if (!topName || topName.includes("General Item") || topName === "N/A") {
+        topName = todayMetrics.topItemName || "Custom Sale";
+      }
+
+      setDailySummary({
+        total_revenue: hasValidRpcData 
+          ? rpcRev + pendingOfflineRevenue 
+          : todayMetrics.totalSales + pendingOfflineRevenue,
+        net_profit: hasValidRpcData 
+          ? rpcProfit + pendingOfflineProfit 
+          : todayMetrics.netProfit + pendingOfflineProfit,
+        top_item_name: topName,
+        top_item_qty: rpcSummary?.top_item_qty || todayMetrics.topItemQty || 0,
+        new_debts: rpcSummary?.new_debts || 0,
+      });
+
+      setLoadingSummary(false);
+    }
+  }, [businessInfo?.id, todayMetrics]);
+
+  useEffect(() => {
+    if (businessInfo?.id) {
+      handleFetchDailySummary();
+    }
+  }, [businessInfo?.id, handleFetchDailySummary]);
+
   // Low Stock Items (Quantity <= 5)
   const lowStockProducts = useMemo(() => {
     return products.filter(
@@ -261,6 +381,15 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  // Ensure card summary data is accessible even if RPC isn't loaded yet
+  const displaySummary = dailySummary || {
+    total_revenue: todayMetrics.totalSales,
+    net_profit: todayMetrics.netProfit,
+    top_item_name: todayMetrics.topItemName,
+    top_item_qty: todayMetrics.topItemQty,
+    new_debts: 0
+  };
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
@@ -313,47 +442,45 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* End of Day Summary Display */}
-      {dailySummary && (
-        <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
-          <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
-            <h3 className="font-bold text-sm text-blue-400 flex items-center gap-2">
-              <span>🔔</span> End-of-Day Performance Digest
-            </h3>
-            <span className="text-xs text-slate-400">Generated Today</span>
+      {/* End of Day Summary Display (Always Visible) */}
+      <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
+        <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+          <h3 className="font-bold text-sm text-blue-400 flex items-center gap-2">
+            <span>🔔</span> End-of-Day Performance Digest
+          </h3>
+          <span className="text-xs text-slate-400">Generated Today</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+          <div>
+            <p className="text-slate-400">Revenue</p>
+            <p className="text-base font-bold text-white mt-1">
+              {currencySymbol}{Number(displaySummary.total_revenue || 0).toLocaleString()}
+            </p>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-            <div>
-              <p className="text-slate-400">Revenue</p>
-              <p className="text-base font-bold text-white mt-1">
-                {currencySymbol}{Number(dailySummary.total_revenue || 0).toLocaleString()}
-              </p>
-            </div>
+          <div>
+            <p className="text-slate-400">Net Profit</p>
+            <p className={`text-base font-bold mt-1 ${Number(displaySummary.net_profit || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+              {currencySymbol}{Number(displaySummary.net_profit || 0).toLocaleString()}
+            </p>
+          </div>
 
-            <div>
-              <p className="text-slate-400">Net Profit</p>
-              <p className={`text-base font-bold mt-1 ${Number(dailySummary.net_profit || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                {currencySymbol}{Number(dailySummary.net_profit || 0).toLocaleString()}
-              </p>
-            </div>
+          <div>
+            <p className="text-slate-400">Top Item</p>
+            <p className="text-base font-bold text-amber-300 mt-1 truncate max-w-[140px] sm:max-w-none">
+              {displaySummary.top_item_name} ({displaySummary.top_item_qty || 0})
+            </p>
+          </div>
 
-            <div>
-              <p className="text-slate-400">Top Item Sold</p>
-              <p className="text-base font-bold text-amber-300 mt-1 truncate">
-                {dailySummary.top_item_name || "N/A"} ({dailySummary.top_item_qty || 0})
-              </p>
-            </div>
-
-            <div>
-              <p className="text-slate-400">New Debts</p>
-              <p className="text-base font-bold text-rose-300 mt-1">
-                {currencySymbol}{Number(dailySummary.new_debts || 0).toLocaleString()}
-              </p>
-            </div>
+          <div>
+            <p className="text-slate-400">New Debts</p>
+            <p className="text-base font-bold text-rose-300 mt-1">
+              {currencySymbol}{Number(displaySummary.new_debts || 0).toLocaleString()}
+            </p>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Realtime Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

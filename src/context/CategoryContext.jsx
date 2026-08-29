@@ -1,7 +1,6 @@
 import { createContext, useContext, useState, useCallback } from "react";
-
 import { useBusiness } from "./BusinessContext";
-
+import { offlineDb } from "../db/offlineDb";
 import {
   getCategories,
   createCategory,
@@ -13,9 +12,7 @@ const CategoryContext = createContext();
 
 export function CategoryProvider({ children }) {
   const { business } = useBusiness();
-
   const [categories, setCategories] = useState([]);
-
   const [loading, setLoading] = useState(false);
 
   const loadCategories = useCallback(async () => {
@@ -26,15 +23,44 @@ export function CategoryProvider({ children }) {
 
     setLoading(true);
 
-    const { data, error } = await getCategories(business.id);
+    try {
+      // 1. OFFLINE FLOW: Load categories from Dexie indexedDB
+      if (!navigator.onLine) {
+        const localCategories = await offlineDb.categories
+          .where({ business_id: business.id })
+          .toArray();
+        setCategories(localCategories || []);
+        setLoading(false);
+        return { data: localCategories, error: null };
+      }
 
-    if (!error) {
-      setCategories(data || []);
+      // 2. ONLINE FLOW: Fetch categories from backend service
+      const { data, error } = await getCategories(business.id);
+
+      if (error) throw error;
+
+      if (data) {
+        // Cache categories locally for offline fallback
+        await offlineDb.categories.bulkPut(data);
+        setCategories(data);
+      }
+
+      setLoading(false);
+      return { data, error: null };
+    } catch (err) {
+      console.error("Error loading categories:", err);
+
+      // Fallback to local offlineDb if network call fails
+      const localFallback = await offlineDb.categories
+        .where({ business_id: business.id })
+        .toArray();
+      if (localFallback.length) {
+        setCategories(localFallback);
+      }
+
+      setLoading(false);
+      return { data: localFallback, error: err };
     }
-
-    setLoading(false);
-
-    return { data, error };
   }, [business]);
 
   const addCategory = async (category) => {
@@ -46,6 +72,9 @@ export function CategoryProvider({ children }) {
     const { data, error } = await createCategory(payload);
 
     if (!error) {
+      if (data) {
+        await offlineDb.categories.put(data);
+      }
       await loadCategories();
     }
 
@@ -56,6 +85,9 @@ export function CategoryProvider({ children }) {
     const { data, error } = await updateCategory(categoryId, updates);
 
     if (!error) {
+      if (data) {
+        await offlineDb.categories.put(data);
+      }
       await loadCategories();
     }
 
@@ -66,6 +98,7 @@ export function CategoryProvider({ children }) {
     const { error } = await deleteCategory(categoryId);
 
     if (!error) {
+      await offlineDb.categories.delete(categoryId);
       await loadCategories();
     }
 
@@ -92,9 +125,7 @@ export function useCategory() {
   const context = useContext(CategoryContext);
 
   if (!context) {
-    throw new Error(
-      "useCategory must be used inside CategoryProvider"
-    );
+    throw new Error("useCategory must be used inside CategoryProvider");
   }
 
   return context;
