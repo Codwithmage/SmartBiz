@@ -7,5 +7,6 @@ offlineDb.version(1).stores({
   services: '++id, business_id, name, synced',
   expenses: '++id, business_id, created_at, synced',
   sales: '++id, business_id, created_at, synced',
+  categories: "id, business_id, name",
 });
 window.offlineDb = offlineDb;

@@ -37,9 +37,12 @@ function InventoryProvider({ children }) {
     try {
       // 1. OFFLINE FLOW: Load products from local Dexie database
       if (!navigator.onLine) {
-        const localProducts = await offlineDb.products
-          .where({ business_id: businessId })
-          .toArray();
+        let localProducts = [];
+        if (offlineDb?.products) {
+          localProducts = await offlineDb.products
+            .where({ business_id: businessId })
+            .toArray();
+        }
         setProducts(localProducts || []);
         setLoadingProducts(false);
         return localProducts || [];
@@ -51,8 +54,10 @@ function InventoryProvider({ children }) {
       if (error) throw error;
 
       if (data) {
-        // Cache fetched products locally in IndexedDB
-        await offlineDb.products.bulkPut(data);
+        // Cache fetched products locally in IndexedDB safely
+        if (offlineDb?.products) {
+          await offlineDb.products.bulkPut(data);
+        }
         setProducts(data);
       }
 
@@ -62,9 +67,12 @@ function InventoryProvider({ children }) {
       console.error("Error loading products:", err);
 
       // Fallback to local Dexie database if network request fails
-      const localFallback = await offlineDb.products
-        .where({ business_id: businessId })
-        .toArray();
+      let localFallback = [];
+      if (offlineDb?.products) {
+        localFallback = await offlineDb.products
+          .where({ business_id: businessId })
+          .toArray();
+      }
       setProducts(localFallback || []);
       setLoadingProducts(false);
       return localFallback || [];
@@ -85,9 +93,12 @@ function InventoryProvider({ children }) {
     try {
       // 1. OFFLINE FLOW: Load categories from local Dexie database
       if (!navigator.onLine) {
-        const localCategories = await offlineDb.categories
-          .where({ business_id: businessId })
-          .toArray();
+        let localCategories = [];
+        if (offlineDb?.categories) {
+          localCategories = await offlineDb.categories
+            .where({ business_id: businessId })
+            .toArray();
+        }
         setCategories(localCategories || []);
         setLoadingCategories(false);
         return localCategories || [];
@@ -99,8 +110,10 @@ function InventoryProvider({ children }) {
       if (error) throw error;
 
       if (data) {
-        // Cache categories locally in IndexedDB
-        await offlineDb.categories.bulkPut(data);
+        // Safe check before caching categories in IndexedDB
+        if (offlineDb?.categories) {
+          await offlineDb.categories.bulkPut(data);
+        }
         setCategories(data);
       }
 
@@ -109,10 +122,13 @@ function InventoryProvider({ children }) {
     } catch (err) {
       console.error("Error loading categories:", err);
 
-      // Fallback to local Dexie database if network request fails
-      const localFallback = await offlineDb.categories
-        .where({ business_id: businessId })
-        .toArray();
+      // Fallback to local Dexie database safely if network request fails
+      let localFallback = [];
+      if (offlineDb?.categories) {
+        localFallback = await offlineDb.categories
+          .where({ business_id: businessId })
+          .toArray();
+      }
       setCategories(localFallback || []);
       setLoadingCategories(false);
       return localFallback || [];
@@ -131,8 +147,8 @@ function InventoryProvider({ children }) {
           category.id === id ? { ...category, ...updates } : category
         )
       );
-      // Synchronize update to local storage
-      if (data) {
+      // Synchronize update to local storage safely
+      if (data && offlineDb?.categories) {
         await offlineDb.categories.put(data);
       }
     }
@@ -150,8 +166,10 @@ function InventoryProvider({ children }) {
       setCategories((previous) =>
         previous.filter((category) => category.id !== id)
       );
-      // Remove from local cache
-      await offlineDb.categories.delete(id);
+      // Remove from local cache safely
+      if (offlineDb?.categories) {
+        await offlineDb.categories.delete(id);
+      }
     }
 
     return { data, error };
@@ -172,9 +190,11 @@ function InventoryProvider({ children }) {
       return { data: null, error };
     }
 
-    // Cache the newly created product in IndexedDB
+    // Cache the newly created product in IndexedDB safely
     if (data) {
-      await offlineDb.products.put(data);
+      if (offlineDb?.products) {
+        await offlineDb.products.put(data);
+      }
       setProducts((prev) => [data, ...prev]);
     }
 

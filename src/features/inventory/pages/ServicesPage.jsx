@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useServices } from "../../services/context/ServicesContext";
 import { useBusiness } from "../../../context/BusinessContext";
 import supabase from "../../../supabase/SupabaseClient";
@@ -66,6 +66,23 @@ function ServicesPage() {
     initServices();
   }, [resolveBusinessId, loadServices]);
 
+  // Deduplicate and filter out archived/inactive services
+  const uniqueActiveServices = useMemo(() => {
+    const serviceMap = new Map();
+    
+    services.forEach((service) => {
+      // Exclude soft-deleted or inactive items
+      if (service.is_active === false) return;
+
+      const key = service.id || `${service.name}-${service.price}`;
+      if (!serviceMap.has(key)) {
+        serviceMap.set(key, service);
+      }
+    });
+
+    return Array.from(serviceMap.values());
+  }, [services]);
+
   // Create Service
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -95,6 +112,10 @@ function ServicesPage() {
       setName("");
       setPrice("");
       setIsModalOpen(false);
+      
+      if (typeof loadServices === "function") {
+        loadServices(activeId);
+      }
     } catch (err) {
       console.error("Error saving service:", err);
       setErrorMsg(err.message || "Failed to save service to database.");
@@ -127,7 +148,6 @@ function ServicesPage() {
 
       if (error) throw error;
 
-      alert("Service updated successfully!");
       setEditingService(null);
       const activeId = await resolveBusinessId();
       if (activeId && typeof loadServices === "function") {
@@ -156,7 +176,6 @@ function ServicesPage() {
 
       if (error) throw error;
 
-      alert(`Service "${service.name}" removed successfully.`);
       const activeId = await resolveBusinessId();
       if (activeId && typeof loadServices === "function") {
         loadServices(activeId);
@@ -192,7 +211,7 @@ function ServicesPage() {
       <div className="bg-white rounded-lg shadow overflow-hidden">
         {loadingServices ? (
           <div className="p-8 text-center text-gray-500">Loading services...</div>
-        ) : services.length === 0 ? (
+        ) : uniqueActiveServices.length === 0 ? (
           <div className="p-8 text-center text-gray-500">
             No services added yet. Click "+ Add Service" to create one.
           </div>
@@ -206,8 +225,8 @@ function ServicesPage() {
               </tr>
             </thead>
             <tbody>
-              {services.map((service, index) => (
-                <tr key={service.id || index} className="border-b hover:bg-gray-50 transition-colors">
+              {uniqueActiveServices.map((service) => (
+                <tr key={service.id} className="border-b hover:bg-gray-50 transition-colors">
                   <td className="py-3 px-4 text-gray-800 font-medium">{service.name}</td>
                   <td className="py-3 px-4 text-blue-600 font-semibold">
                     ₦{Number(service.price || 0).toLocaleString()}
