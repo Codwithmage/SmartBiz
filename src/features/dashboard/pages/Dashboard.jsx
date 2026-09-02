@@ -225,6 +225,7 @@ export default function Dashboard() {
       }
 
       const todayStr = new Date().toISOString().split("T")[0];
+      const todayLocalDateStr = new Date().toLocaleDateString();
       let pendingOfflineRevenue = 0;
       let pendingOfflineProfit = 0;
       let pendingOfflineCount = 0;
@@ -237,8 +238,9 @@ export default function Dashboard() {
         const todaysUnsyncedSales = localSales.filter((sale) => {
           const isUnsynced = sale.synced === 0;
           const saleDate = sale.created_at || sale.date;
-          const matchesToday = saleDate && saleDate.startsWith(todayStr);
-          return isUnsynced && matchesToday;
+          if (!saleDate) return false;
+          const formattedSaleDate = new Date(saleDate).toISOString().split("T")[0];
+          return isUnsynced && formattedSaleDate === todayStr;
         });
 
         todaysUnsyncedSales.forEach((sale) => {
@@ -254,13 +256,30 @@ export default function Dashboard() {
         console.error("Dexie read error during EOD:", dexieErr);
       }
 
-      // Calculate total daily sales count directly from local state as robust fallback
+      // Calculate total daily sales/services count directly from local state as accurate fallback
       const todaysSalesFromState = sales.filter((s) => {
         const d = s.created_at || s.date;
-        return d && d.startsWith(todayStr);
+        if (!d) return false;
+        return new Date(d).toLocaleDateString() === todayLocalDateStr;
       }).length;
 
-      const finalCount = rpcSummary.total_sales_count || (todaysSalesFromState + pendingOfflineCount);
+      const todaysServicesFromState = services.filter((s) => {
+        const d = s.created_at || s.date;
+        if (!d) return false;
+        return new Date(d).toLocaleDateString() === todayLocalDateStr;
+      }).length;
+
+      // Check all possible RPC key names returned by Supabase
+      const rpcCount = 
+        rpcSummary.total_sales_count ?? 
+        rpcSummary.sales_count ?? 
+        rpcSummary.total_sales ?? 
+        rpcSummary.count ?? 
+        0;
+
+      const fallbackCount = todaysSalesFromState + todaysServicesFromState + pendingOfflineCount;
+
+      const finalCount = Number(rpcCount) > 0 ? Number(rpcCount) : fallbackCount;
 
       setDailySummary({
         ...rpcSummary,
@@ -273,7 +292,7 @@ export default function Dashboard() {
     } finally {
       setLoadingSummary(false);
     }
-  }, [businessInfo?.id, sales]);
+  }, [businessInfo?.id, sales, services]);
 
   useEffect(() => {
     if (businessInfo?.id) {
