@@ -28,9 +28,12 @@ export default function Dashboard() {
     const initAuthAndBusiness = async () => {
       try {
         setLoading(true);
-        
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
+
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
         if (sessionError || !session?.user) {
           if (isMounted) setLoading(false);
           return;
@@ -39,14 +42,14 @@ export default function Dashboard() {
         const user = session.user;
         if (isMounted) setCurrentUserId(user.id);
 
-        // Check if user is business owner
+        // Step A: Check if user is business owner
         let { data: biz } = await supabase
           .from("businesses")
           .select("*")
           .eq("owner_id", user.id)
           .maybeSingle();
 
-        // Check profile if staff
+        // Step B: Check profile if staff
         if (!biz) {
           const { data: profile } = await supabase
             .from("profiles")
@@ -82,7 +85,7 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Handler for subscribing to weekly push notifications
+  // Handler for subscribing to push notifications
   const handleEnablePush = useCallback(async () => {
     if (!currentUserId || !businessInfo?.id) return;
     setPushStatus("Enabling...");
@@ -102,14 +105,22 @@ export default function Dashboard() {
     }
   }, [currentUserId, businessInfo?.id]);
 
-  // 2. Fetch table data for the specific business
+  // 2. Fetch table data with nested sale_items
   const fetchDashboardData = useCallback(async (bizId) => {
     if (!bizId) return;
 
     try {
       const [salesRes, servicesRes, expensesRes, productsRes] = await Promise.all([
-        supabase.from("sales").select("*").eq("business_id", bizId).order("created_at", { ascending: false }),
-        supabase.from("services").select("*").eq("business_id", bizId).order("created_at", { ascending: false }),
+        supabase
+          .from("sales")
+          .select("*, sale_items(*)")
+          .eq("business_id", bizId)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("services")
+          .select("*")
+          .eq("business_id", bizId)
+          .order("created_at", { ascending: false }),
         supabase.from("expenses").select("*").eq("business_id", bizId),
         supabase.from("products").select("*").eq("business_id", bizId),
       ]);
@@ -138,6 +149,7 @@ export default function Dashboard() {
     const channel = supabase
       .channel(`realtime-dashboard-${bizId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "sales", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "sale_items" }, () => fetchDashboardData(bizId))
       .on("postgres_changes", { event: "*", schema: "public", table: "services", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
       .on("postgres_changes", { event: "*", schema: "public", table: "expenses", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
       .on("postgres_changes", { event: "*", schema: "public", table: "products", filter: `business_id=eq.${bizId}` }, () => fetchDashboardData(bizId))
@@ -148,20 +160,136 @@ export default function Dashboard() {
     };
   }, [businessInfo?.id, fetchDashboardData]);
 
-  // Lookup map for products
+  // Lookup map for catalog products
   const productMap = useMemo(() => {
     const map = new Map();
     products.forEach((p) => map.set(p.id, p));
     return map;
   }, [products]);
 
+  // Catalog service IDs and Names lookup sets
+  const { serviceSet, serviceNameSet } = useMemo(() => {
+    const idSet = new Set();
+    const nameSet = new Set();
+    services.forEach((s) => {
+      if (s.id) idSet.add(String(s.id));
+      if (s.name) nameSet.add(String(s.name).trim().toLowerCase());
+      if (s.title) nameSet.add(String(s.title).trim().toLowerCase());
+      if (s.service_name) nameSet.add(String(s.service_name).trim().toLowerCase());
+    });
+    return { serviceSet: idSet, serviceNameSet: nameSet };
+  }, [services]);
+
+  // Enhanced service classifier logic
+  const checkIfService = useCallback(
+    (item) => {
+      if (!item) return false;
+
+      // 1. Explicit type or category check
+      const typeStr = String(item.item_type || item.type || item.category || "").toLowerCase();
+      if (typeStr === "service" || typeStr === "services") return true;
+
+      // 2. Presence of explicit service_id key
+      if (item.service_id) return true;
+
+      // 3. ID lookup against catalog services table
+      const possibleId = String(item.product_id || item.item_id || item.id || "");
+      if (possibleId && serviceSet.has(possibleId)) return true;
+
+      // 4. Fallback: Name / Title lookup against catalog service names
+      const possibleName = String(
+        item.item_name || item.name || item.title || item.product_name || item.description || ""
+      ).trim().toLowerCase();
+      if (possibleName && serviceNameSet.has(possibleName)) return true;
+
+      return false;
+    },
+    [serviceSet, serviceNameSet]
+  );
+
+  // EOD Summary Calculation
+  const handleFetchDailySummary = useCallback(async () => {
+    if (!businessInfo?.id) return;
+    setLoadingSummary(true);
+
+    try {
+      let rpcSummary = { total_revenue: 0, net_profit: 0, total_sales_count: 0, new_debts: 0 };
+
+      if (navigator.onLine) {
+        const { data, error } = await supabase.rpc("get_daily_business_summary", {
+          p_business_id: businessInfo.id,
+        });
+        if (!error && data && data.length > 0) {
+          rpcSummary = data[0];
+        }
+      }
+
+      const todayStr = new Date().toISOString().split("T")[0];
+      let pendingOfflineRevenue = 0;
+      let pendingOfflineProfit = 0;
+      let pendingOfflineCount = 0;
+
+      try {
+        const localSales = await offlineDb.sales
+          .where({ business_id: businessInfo.id })
+          .toArray();
+
+        const todaysUnsyncedSales = localSales.filter((sale) => {
+          const isUnsynced = sale.synced === 0;
+          const saleDate = sale.created_at || sale.date;
+          const matchesToday = saleDate && saleDate.startsWith(todayStr);
+          return isUnsynced && matchesToday;
+        });
+
+        todaysUnsyncedSales.forEach((sale) => {
+          const amount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
+          const cost = Number(sale.cost_price || 0);
+          const qty = Number(sale.quantity || 1);
+
+          pendingOfflineRevenue += amount;
+          pendingOfflineProfit += amount - cost * qty;
+          pendingOfflineCount += 1;
+        });
+      } catch (dexieErr) {
+        console.error("Dexie read error during EOD:", dexieErr);
+      }
+
+      // Calculate total daily sales count directly from local state as robust fallback
+      const todaysSalesFromState = sales.filter((s) => {
+        const d = s.created_at || s.date;
+        return d && d.startsWith(todayStr);
+      }).length;
+
+      const finalCount = rpcSummary.total_sales_count || (todaysSalesFromState + pendingOfflineCount);
+
+      setDailySummary({
+        ...rpcSummary,
+        total_revenue: Number(rpcSummary.total_revenue || 0) + pendingOfflineRevenue,
+        net_profit: Number(rpcSummary.net_profit || 0) + pendingOfflineProfit,
+        total_sales_count: finalCount,
+      });
+    } catch (err) {
+      console.error("Failed to fetch daily summary:", err.message);
+    } finally {
+      setLoadingSummary(false);
+    }
+  }, [businessInfo?.id, sales]);
+
+  useEffect(() => {
+    if (businessInfo?.id) {
+      handleFetchDailySummary();
+    }
+  }, [businessInfo?.id, handleFetchDailySummary]);
+
   // Metrics calculation based on selected timeframe
   const metrics = useMemo(() => {
     const now = new Date();
 
-    const isWithinTimeframe = (dateString) => {
-      if (!dateString) return false;
-      const date = new Date(dateString);
+    const isWithinTimeframe = (record) => {
+      const rawDate = record?.created_at || record?.date || record?.sales_date || record?.created_date;
+      if (!rawDate) return false;
+      const date = new Date(rawDate);
+      if (isNaN(date.getTime())) return false;
 
       if (timeframe === "daily") {
         return date.toDateString() === now.toDateString();
@@ -170,43 +298,73 @@ export default function Dashboard() {
         sevenDaysAgo.setDate(now.getDate() - 7);
         return date >= sevenDaysAgo;
       } else if (timeframe === "monthly") {
-        return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+        return (
+          date.getMonth() === now.getMonth() &&
+          date.getFullYear() === now.getFullYear()
+        );
       }
       return true;
     };
 
-    const filteredSales = sales.filter((s) => isWithinTimeframe(s.created_at || s.date));
-    const filteredServices = services.filter((s) => isWithinTimeframe(s.created_at || s.date));
-    const filteredExpenses = expenses.filter((e) => isWithinTimeframe(e.created_at || e.date));
+    const filteredSales = sales.filter((s) => isWithinTimeframe(s));
+    const filteredServices = services.filter((s) => isWithinTimeframe(s));
+    const filteredExpenses = expenses.filter((e) => isWithinTimeframe(e));
 
-    const totalProductSales = filteredSales.reduce(
-      (acc, sale) => acc + Number(sale.amount || sale.total_amount || sale.unit_price || 0),
-      0
-    );
+    let totalProductSales = 0;
+    let totalServicesRevenue = 0;
 
-    const totalServicesRevenue = filteredServices.reduce(
-      (acc, service) => acc + Number(service.price || service.amount || service.total_amount || 0),
-      0
-    );
+    filteredSales.forEach((sale) => {
+      const saleAmount = Number(
+        sale.amount || sale.total_amount || sale.total || sale.price || sale.unit_price || sale.subtotal || 0
+      );
+
+      if (sale.sale_items && Array.isArray(sale.sale_items) && sale.sale_items.length > 0) {
+        sale.sale_items.forEach((item) => {
+          const itemAmount = Number(
+            item.total_price || item.amount || (Number(item.price || item.unit_price || 0) * Number(item.quantity || 1)) || 0
+          );
+
+          if (checkIfService(item)) {
+            totalServicesRevenue += itemAmount;
+          } else {
+            totalProductSales += itemAmount;
+          }
+        });
+      } else {
+        if (checkIfService(sale)) {
+          totalServicesRevenue += saleAmount;
+        } else {
+          totalProductSales += saleAmount;
+        }
+      }
+    });
+
+    filteredServices.forEach((service) => {
+      totalServicesRevenue += Number(
+        service.price || service.amount || service.total_amount || service.total || 0
+      );
+    });
 
     const totalSales = totalProductSales + totalServicesRevenue;
 
     const totalExpenses = filteredExpenses.reduce(
-      (acc, expense) => acc + Number(expense.amount || 0),
+      (acc, expense) => acc + Number(expense.amount || expense.total || expense.cost || 0),
       0
     );
 
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
+      if (checkIfService(sale)) return acc;
+
       const product = productMap.get(sale.product_id);
-      const qty = Number(sale.quantity || 1);
-      const saleAmount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
-      const unitCost = Number(sale.cost_price || product?.cost_price || 0);
+      const qty = Number(sale.quantity || sale.qty || 1);
+      const saleAmount = Number(sale.amount || sale.total_amount || sale.total || sale.unit_price || 0);
+      const unitCost = Number(sale.cost_price || sale.cost || product?.cost_price || 0);
 
       return acc + (saleAmount - unitCost * qty);
     }, 0);
 
     const netServiceProfit = filteredServices.reduce((acc, service) => {
-      const price = Number(service.price || service.amount || service.total_amount || 0);
+      const price = Number(service.price || service.amount || service.total_amount || service.total || 0);
       const cost = Number(service.cost || service.cost_price || 0);
       return acc + (price - cost);
     }, 0);
@@ -214,153 +372,7 @@ export default function Dashboard() {
     const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
 
     return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, netProfit };
-  }, [sales, services, expenses, timeframe, productMap]);
-
-  // Strict TODAY metrics for accurate EOD Fallbacks
-  const todayMetrics = useMemo(() => {
-    const now = new Date();
-    const isToday = (dateString) => {
-      if (!dateString) return false;
-      return new Date(dateString).toDateString() === now.toDateString();
-    };
-
-    const todaysSales = sales.filter((s) => isToday(s.created_at || s.date));
-    const todaysServices = services.filter((s) => isToday(s.created_at || s.date));
-    const todaysExpenses = expenses.filter((e) => isToday(e.created_at || e.date));
-
-    const totalProductSales = todaysSales.reduce(
-      (acc, sale) => acc + Number(sale.amount || sale.total_amount || sale.unit_price || 0),
-      0
-    );
-    const totalServicesRevenue = todaysServices.reduce(
-      (acc, service) => acc + Number(service.price || service.amount || service.total_amount || 0),
-      0
-    );
-    const totalSales = totalProductSales + totalServicesRevenue;
-
-    const totalExpenses = todaysExpenses.reduce(
-      (acc, expense) => acc + Number(expense.amount || 0),
-      0
-    );
-
-    const grossProductProfit = todaysSales.reduce((acc, sale) => {
-      const product = productMap.get(sale.product_id);
-      const qty = Number(sale.quantity || 1);
-      const saleAmount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
-      const unitCost = Number(sale.cost_price || product?.cost_price || 0);
-      return acc + (saleAmount - unitCost * qty);
-    }, 0);
-
-    const netServiceProfit = todaysServices.reduce((acc, service) => {
-      const price = Number(service.price || service.amount || service.total_amount || 0);
-      const cost = Number(service.cost || service.cost_price || 0);
-      return acc + (price - cost);
-    }, 0);
-
-    const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
-
-    // Calculate Top Item Sold Today dynamically from sales state
-    const itemCounts = {};
-    todaysSales.forEach((s) => {
-      const product = productMap.get(s.product_id);
-      const name = s.item_name || s.product_name || product?.name || s.name || "Custom Sale";
-      const qty = Number(s.quantity || s.qty || 1);
-      itemCounts[name] = (itemCounts[name] || 0) + qty;
-    });
-
-    let topItemName = "Custom Sale";
-    let topItemQty = 0;
-
-    Object.entries(itemCounts).forEach(([name, count]) => {
-      if (count > topItemQty) {
-        topItemQty = count;
-        topItemName = name;
-      }
-    });
-
-    return { totalSales, netProfit, topItemName, topItemQty };
-  }, [sales, services, expenses, productMap]);
-
-  // Guaranteed Daily Summary Resolver
-  const handleFetchDailySummary = useCallback(async () => {
-    if (!businessInfo?.id) return;
-    setLoadingSummary(true);
-
-    let rpcSummary = null;
-    let pendingOfflineRevenue = 0;
-    let pendingOfflineProfit = 0;
-
-    try {
-      if (navigator.onLine) {
-        const { data, error } = await supabase.rpc("get_daily_business_summary", {
-          p_business_id: businessInfo.id,
-        });
-
-        if (error) {
-          console.warn("RPC Error (Falling back to calculated local state):", error.message);
-        } else if (data && data.length > 0) {
-          rpcSummary = data[0];
-        }
-      }
-
-      try {
-        const allLocalSales = await offlineDb.sales.toArray();
-        const currentBizId = String(businessInfo.id);
-
-        const todaysUnsyncedSales = allLocalSales.filter((sale) => {
-          const saleBizId = String(sale.business_id || sale.businessId || "");
-          const matchesBiz = !saleBizId || saleBizId === currentBizId;
-          const isUnsynced = sale.synced === 0 || sale.synced === false || sale.synced === undefined || sale.synced === null;
-
-          return matchesBiz && isUnsynced;
-        });
-
-        todaysUnsyncedSales.forEach((sale) => {
-          const amount = Number(sale.amount || sale.total_amount || sale.total || sale.price || sale.unit_price || 0);
-          const cost = Number(sale.cost_price || sale.cost || 0);
-          const qty = Number(sale.quantity || sale.qty || 1);
-
-          pendingOfflineRevenue += amount;
-          pendingOfflineProfit += (amount - cost * qty);
-        });
-
-      } catch (dexieErr) {
-        console.error("Dexie read error during EOD execution:", dexieErr);
-      }
-    } catch (err) {
-      console.error("Failed to fetch daily summary RPC:", err.message);
-    } finally {
-      // Force construct a valid summary object so the card NEVER disappears
-      const hasValidRpcData = rpcSummary && typeof rpcSummary.total_revenue !== "undefined";
-      const rpcRev = hasValidRpcData ? Number(rpcSummary.total_revenue || 0) : 0;
-      const rpcProfit = hasValidRpcData ? Number(rpcSummary.net_profit || 0) : 0;
-
-      let topName = rpcSummary?.top_item_name;
-      if (!topName || topName.includes("General Item") || topName === "N/A") {
-        topName = todayMetrics.topItemName || "Custom Sale";
-      }
-
-      setDailySummary({
-        total_revenue: hasValidRpcData 
-          ? rpcRev + pendingOfflineRevenue 
-          : todayMetrics.totalSales + pendingOfflineRevenue,
-        net_profit: hasValidRpcData 
-          ? rpcProfit + pendingOfflineProfit 
-          : todayMetrics.netProfit + pendingOfflineProfit,
-        top_item_name: topName,
-        top_item_qty: rpcSummary?.top_item_qty || todayMetrics.topItemQty || 0,
-        new_debts: rpcSummary?.new_debts || 0,
-      });
-
-      setLoadingSummary(false);
-    }
-  }, [businessInfo?.id, todayMetrics]);
-
-  useEffect(() => {
-    if (businessInfo?.id) {
-      handleFetchDailySummary();
-    }
-  }, [businessInfo?.id, handleFetchDailySummary]);
+  }, [sales, services, expenses, timeframe, productMap, checkIfService]);
 
   // Low Stock Items (Quantity <= 5)
   const lowStockProducts = useMemo(() => {
@@ -381,15 +393,6 @@ export default function Dashboard() {
       </div>
     );
   }
-
-  // Ensure card summary data is accessible even if RPC isn't loaded yet
-  const displaySummary = dailySummary || {
-    total_revenue: todayMetrics.totalSales,
-    net_profit: todayMetrics.netProfit,
-    top_item_name: todayMetrics.topItemName,
-    top_item_qty: todayMetrics.topItemQty,
-    new_debts: 0
-  };
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
@@ -442,45 +445,47 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* End of Day Summary Display (Always Visible) */}
-      <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
-        <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
-          <h3 className="font-bold text-sm text-blue-400 flex items-center gap-2">
-            <span>🔔</span> End-of-Day Performance Digest
-          </h3>
-          <span className="text-xs text-slate-400">Generated Today</span>
+      {/* End of Day Summary Display */}
+      {dailySummary && (
+        <div className="rounded-xl bg-slate-900 text-white p-5 shadow-md">
+          <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+            <h3 className="font-bold text-sm text-blue-400 flex items-center gap-2">
+              <span>🔔</span> End-of-Day Performance Digest
+            </h3>
+            <span className="text-xs text-slate-400">Generated Today</span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+            <div>
+              <p className="text-slate-400">Revenue</p>
+              <p className="text-base font-bold text-white mt-1">
+                {currencySymbol}{Number(dailySummary.total_revenue || 0).toLocaleString()}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">Net Profit</p>
+              <p className={`text-base font-bold mt-1 ${Number(dailySummary.net_profit || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                {currencySymbol}{Number(dailySummary.net_profit || 0).toLocaleString()}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">Sales Count</p>
+              <p className="text-base font-bold text-amber-300 mt-1">
+                {dailySummary.total_sales_count || 0} {dailySummary.total_sales_count === 1 ? "Sale" : "Sales"}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-slate-400">New Debts</p>
+              <p className="text-base font-bold text-rose-300 mt-1">
+                {currencySymbol}{Number(dailySummary.new_debts || 0).toLocaleString()}
+              </p>
+            </div>
+          </div>
         </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-          <div>
-            <p className="text-slate-400">Revenue</p>
-            <p className="text-base font-bold text-white mt-1">
-              {currencySymbol}{Number(displaySummary.total_revenue || 0).toLocaleString()}
-            </p>
-          </div>
-
-          <div>
-            <p className="text-slate-400">Net Profit</p>
-            <p className={`text-base font-bold mt-1 ${Number(displaySummary.net_profit || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-              {currencySymbol}{Number(displaySummary.net_profit || 0).toLocaleString()}
-            </p>
-          </div>
-
-          <div>
-            <p className="text-slate-400">Top Item</p>
-            <p className="text-base font-bold text-amber-300 mt-1 truncate max-w-[140px] sm:max-w-none">
-              {displaySummary.top_item_name} ({displaySummary.top_item_qty || 0})
-            </p>
-          </div>
-
-          <div>
-            <p className="text-slate-400">New Debts</p>
-            <p className="text-base font-bold text-rose-300 mt-1">
-              {currencySymbol}{Number(displaySummary.new_debts || 0).toLocaleString()}
-            </p>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* Realtime Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
