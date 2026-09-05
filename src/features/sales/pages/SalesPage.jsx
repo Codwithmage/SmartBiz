@@ -33,10 +33,11 @@ function SalesPage() {
   const [paymentStatusFilter, setPaymentStatusFilter] = useState("ALL");
 
   const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [itemTypeFilter, setItemTypeFilter] = useState("ALL"); // ALL, PRODUCT, SERVICE
   const [cart, setCart] = useState([]);
-  const [discountPercent, setDiscountPercent] = useState(0);
+  const [discountAmountInput, setDiscountAmountInput] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [paymentStatus, setPaymentStatus] = useState("PAID");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -226,8 +227,7 @@ function SalesPage() {
     0
   );
 
-  const parsedDiscount = parseFloat(discountPercent) || 0;
-  const discountAmount = (cartSubtotal * parsedDiscount) / 100;
+  const discountAmount = Math.min(cartSubtotal, parseFloat(discountAmountInput) || 0);
   const cartTotal = Math.max(0, cartSubtotal - discountAmount);
 
   const handleCompleteSale = async (e) => {
@@ -238,6 +238,7 @@ function SalesPage() {
     const salePayload = {
       business_id: businessId,
       customer_name: customerName.trim() || "Walk-in Customer",
+      customer_phone: customerPhone.trim() || null,
       subtotal: cartSubtotal,
       discount_amount: discountAmount,
       total_amount: cartTotal,
@@ -272,7 +273,8 @@ function SalesPage() {
     setIsSubmitting(false);
     setCart([]);
     setCustomerName("");
-    setDiscountPercent(0);
+    setCustomerPhone("");
+    setDiscountAmountInput(0);
 
     if (data && data[0]) {
       setSelectedSale(data[0]);
@@ -285,7 +287,8 @@ function SalesPage() {
     return (sales || []).filter((sale) => {
       const matchesSearch =
         sale.receipt_number?.toLowerCase().includes(historySearch.toLowerCase()) ||
-        sale.customer_name?.toLowerCase().includes(historySearch.toLowerCase());
+        sale.customer_name?.toLowerCase().includes(historySearch.toLowerCase()) ||
+        sale.customer_phone?.toLowerCase().includes(historySearch.toLowerCase());
       const matchesStatus =
         paymentStatusFilter === "ALL" || sale.payment_status === paymentStatusFilter;
 
@@ -408,7 +411,7 @@ function SalesPage() {
               <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
                 <input
                   type="text"
-                  placeholder="Search receipt #, customer..."
+                  placeholder="Search receipt #, customer, phone..."
                   value={historySearch}
                   onChange={(e) => setHistorySearch(e.target.value)}
                   className="w-full sm:w-auto rounded-md border px-3 py-1.5 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -462,7 +465,10 @@ function SalesPage() {
                           {new Date(sale.created_at).toLocaleDateString()}
                         </td>
                         <td className="py-3 px-3">
-                          {sale.customer_name || "Walk-in Customer"}
+                          <div>{sale.customer_name || "Walk-in Customer"}</div>
+                          {sale.customer_phone && (
+                            <div className="text-xs text-gray-400">{sale.customer_phone}</div>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-center">
                           {sale.sale_items?.length || sale.items?.length || 0}
@@ -697,17 +703,30 @@ function SalesPage() {
               />
             </div>
 
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+                Customer Phone (Optional)
+              </label>
+              <input
+                type="tel"
+                placeholder="08012345678"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                className="w-full rounded-md border p-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
-                  Discount (%)
+                  Discount Amount ({currency})
                 </label>
                 <input
                   type="number"
                   min="0"
-                  max="100"
-                  value={discountPercent}
-                  onChange={(e) => setDiscountPercent(e.target.value)}
+                  step="0.01"
+                  value={discountAmountInput}
+                  onChange={(e) => setDiscountAmountInput(e.target.value)}
                   className="w-full rounded-md border p-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -806,6 +825,11 @@ function SalesPage() {
                 <p className="font-semibold text-gray-900">
                   {selectedSale.customer_name || "Walk-in Customer"}
                 </p>
+                {selectedSale.customer_phone && (
+                  <p className="text-gray-500 font-mono text-[11px]">
+                    {selectedSale.customer_phone}
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-gray-500">Payment Method</p>

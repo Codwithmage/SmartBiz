@@ -13,7 +13,7 @@ function InventoryProducts() {
   const [restockingId, setRestockingId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [editingProduct, setEditingProduct] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", sku: "", selling_price: "" });
+  const [editForm, setEditForm] = useState({ name: "", sku: "", cost_price: "", selling_price: "" });
   const [savingEdit, setSavingEdit] = useState(false);
 
   useEffect(() => {
@@ -61,6 +61,7 @@ function InventoryProducts() {
     setEditForm({
       name: product.name || "",
       sku: product.sku || "",
+      cost_price: product.cost_price || "",
       selling_price: product.selling_price || "",
     });
   };
@@ -77,6 +78,7 @@ function InventoryProducts() {
         .update({
           name: editForm.name,
           sku: editForm.sku,
+          cost_price: parseFloat(editForm.cost_price) || 0,
           selling_price: parseFloat(editForm.selling_price) || 0,
         })
         .eq("id", editingProduct.id);
@@ -160,7 +162,8 @@ function InventoryProducts() {
                   <th className="p-4">Product</th>
                   <th className="p-4">Category</th>
                   <th className="p-4">Stock</th>
-                  <th className="p-4">Price</th>
+                  <th className="p-4">Cost Price</th>
+                  <th className="p-4">Selling Price</th>
                   <th className="p-4 text-right">Actions</th>
                 </tr>
               </thead>
@@ -190,6 +193,10 @@ function InventoryProducts() {
                       >
                         {product.quantity} in stock
                       </span>
+                    </td>
+
+                    <td className="p-4 font-medium text-gray-600">
+                      ₦{Number(product.cost_price || 0).toLocaleString()}
                     </td>
 
                     <td className="p-4 font-semibold text-gray-900">
@@ -256,16 +263,29 @@ function InventoryProducts() {
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">Selling Price (₦)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  value={editForm.selling_price}
-                  onChange={(e) => setEditForm({ ...editForm, selling_price: e.target.value })}
-                  className="w-full border rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Cost Price (₦)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editForm.cost_price}
+                    onChange={(e) => setEditForm({ ...editForm, cost_price: e.target.value })}
+                    className="w-full border rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 mb-1">Selling Price (₦)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={editForm.selling_price}
+                    onChange={(e) => setEditForm({ ...editForm, selling_price: e.target.value })}
+                    className="w-full border rounded-md p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
               </div>
 
               <div className="flex justify-end space-x-3 pt-3 border-t">

@@ -105,7 +105,7 @@ export default function Dashboard() {
     }
   }, [currentUserId, businessInfo?.id]);
 
-  // 2. Fetch table data with nested sale_items
+  // 2. Fetch table data safely without querying unconfirmed columns in sale_items
   const fetchDashboardData = useCallback(async (bizId) => {
     if (!bizId) return;
 
@@ -180,23 +180,35 @@ export default function Dashboard() {
     return { serviceSet: idSet, serviceNameSet: nameSet };
   }, [services]);
 
-  // Enhanced service classifier logic
+  // Comprehensive service classifier logic
   const checkIfService = useCallback(
     (item) => {
       if (!item) return false;
 
-      // 1. Explicit type or category check
-      const typeStr = String(item.item_type || item.type || item.category || "").toLowerCase();
-      if (typeStr === "service" || typeStr === "services") return true;
+      // Explicit boolean check
+      if (item.is_service === true || item.is_service === "true") return true;
 
-      // 2. Presence of explicit service_id key
+      // Type/category field checks
+      const typeStr = String(
+        item.item_type || item.type || item.category || item.sale_type || item.kind || ""
+      ).toLowerCase();
+      if (
+        typeStr === "service" ||
+        typeStr === "services" ||
+        typeStr === "service_fee" ||
+        typeStr === "service_charge"
+      ) {
+        return true;
+      }
+
+      // Explicit service ID check
       if (item.service_id) return true;
 
-      // 3. ID lookup against catalog services table
+      // ID lookup against service catalog
       const possibleId = String(item.product_id || item.item_id || item.id || "");
       if (possibleId && serviceSet.has(possibleId)) return true;
 
-      // 4. Fallback: Name / Title lookup against catalog service names
+      // Name / Title lookup against service catalog
       const possibleName = String(
         item.item_name || item.name || item.title || item.product_name || item.description || ""
       ).trim().toLowerCase();
@@ -236,7 +248,7 @@ export default function Dashboard() {
           .toArray();
 
         const todaysUnsyncedSales = localSales.filter((sale) => {
-          const isUnsynced = sale.synced === 0;
+          const isUnsynced = sale.synced === 0 || sale.synced === false;
           const saleDate = sale.created_at || sale.date;
           if (!saleDate) return false;
           const formattedSaleDate = new Date(saleDate).toISOString().split("T")[0];
@@ -244,7 +256,9 @@ export default function Dashboard() {
         });
 
         todaysUnsyncedSales.forEach((sale) => {
-          const amount = Number(sale.amount || sale.total_amount || sale.unit_price || 0);
+          const rawAmount = Number(sale.total_amount || sale.amount || sale.unit_price || 0);
+          const discount = Number(sale.discount_amount || 0);
+          const amount = Math.max(0, rawAmount - discount);
           const cost = Number(sale.cost_price || 0);
           const qty = Number(sale.quantity || 1);
 
@@ -256,7 +270,6 @@ export default function Dashboard() {
         console.error("Dexie read error during EOD:", dexieErr);
       }
 
-      // Calculate total daily sales/services count directly from local state as accurate fallback
       const todaysSalesFromState = sales.filter((s) => {
         const d = s.created_at || s.date;
         if (!d) return false;
@@ -269,16 +282,14 @@ export default function Dashboard() {
         return new Date(d).toLocaleDateString() === todayLocalDateStr;
       }).length;
 
-      // Check all possible RPC key names returned by Supabase
-      const rpcCount = 
-        rpcSummary.total_sales_count ?? 
-        rpcSummary.sales_count ?? 
-        rpcSummary.total_sales ?? 
-        rpcSummary.count ?? 
+      const rpcCount =
+        rpcSummary.total_sales_count ??
+        rpcSummary.sales_count ??
+        rpcSummary.total_sales ??
+        rpcSummary.count ??
         0;
 
       const fallbackCount = todaysSalesFromState + todaysServicesFromState + pendingOfflineCount;
-
       const finalCount = Number(rpcCount) > 0 ? Number(rpcCount) : fallbackCount;
 
       setDailySummary({
@@ -331,29 +342,45 @@ export default function Dashboard() {
 
     let totalProductSales = 0;
     let totalServicesRevenue = 0;
+    let totalServicesProfitFromCart = 0;
 
     filteredSales.forEach((sale) => {
-      const saleAmount = Number(
-        sale.amount || sale.total_amount || sale.total || sale.price || sale.unit_price || sale.subtotal || 0
+      const discount = Number(sale.discount_amount || 0);
+      const rawTotal = Number(
+        sale.total_amount || sale.amount || sale.total || sale.price || sale.unit_price || sale.subtotal || 0
       );
+      // Net sale revenue after applying discount
+      const actualSaleAmount = Math.max(0, (sale.total_amount !== undefined ? Number(sale.total_amount) : rawTotal - discount));
 
       if (sale.sale_items && Array.isArray(sale.sale_items) && sale.sale_items.length > 0) {
+        let saleSubtotal = 0;
+        
         sale.sale_items.forEach((item) => {
           const itemAmount = Number(
             item.total_price || item.amount || (Number(item.price || item.unit_price || 0) * Number(item.quantity || 1)) || 0
           );
+          saleSubtotal += itemAmount;
 
           if (checkIfService(item)) {
             totalServicesRevenue += itemAmount;
+            const itemCost = Number(item.cost_price || item.cost || 0) * Number(item.quantity || 1);
+            totalServicesProfitFromCart += (itemAmount - itemCost);
           } else {
             totalProductSales += itemAmount;
           }
         });
+
+        // Deduct discount proportionally or directly from product sales total
+        if (discount > 0 && saleSubtotal > 0) {
+          totalProductSales = Math.max(0, totalProductSales - discount);
+        }
       } else {
         if (checkIfService(sale)) {
-          totalServicesRevenue += saleAmount;
+          totalServicesRevenue += actualSaleAmount;
+          const saleCost = Number(sale.cost_price || sale.cost || 0) * Number(sale.quantity || 1);
+          totalServicesProfitFromCart += (actualSaleAmount - saleCost);
         } else {
-          totalProductSales += saleAmount;
+          totalProductSales += actualSaleAmount;
         }
       }
     });
@@ -371,26 +398,53 @@ export default function Dashboard() {
       0
     );
 
+    // Gross Product Profit (Accounting for Sale Discounts)
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
       if (checkIfService(sale)) return acc;
 
+      const discount = Number(sale.discount_amount || 0);
+
+      if (sale.sale_items && Array.isArray(sale.sale_items) && sale.sale_items.length > 0) {
+        const saleItemsProfit = sale.sale_items.reduce((itemAcc, item) => {
+          if (checkIfService(item)) return itemAcc;
+
+          const product = productMap.get(item.product_id);
+          const qty = Number(item.quantity || item.qty || 1);
+          const itemAmount = Number(
+            item.total_price || item.amount || (Number(item.unit_price || item.price || 0) * qty)
+          );
+          const unitCost = Number(item.cost_price || item.cost || product?.cost_price || 0);
+
+          return itemAcc + (itemAmount - unitCost * qty);
+        }, 0);
+
+        // Deduct discount from total product profit
+        return acc + (saleItemsProfit - discount);
+      }
+
       const product = productMap.get(sale.product_id);
       const qty = Number(sale.quantity || sale.qty || 1);
-      const saleAmount = Number(sale.amount || sale.total_amount || sale.total || sale.unit_price || 0);
+      const rawSaleAmount = Number(sale.amount || sale.total_amount || sale.total || sale.unit_price || 0);
+      const actualSaleAmount = sale.total_amount !== undefined ? Number(sale.total_amount) : Math.max(0, rawSaleAmount - discount);
       const unitCost = Number(sale.cost_price || sale.cost || product?.cost_price || 0);
 
-      return acc + (saleAmount - unitCost * qty);
+      return acc + (actualSaleAmount - unitCost * qty);
     }, 0);
 
-    const netServiceProfit = filteredServices.reduce((acc, service) => {
+    // Standalone Service Profit from `services` table
+    const netServiceProfitTable = filteredServices.reduce((acc, service) => {
       const price = Number(service.price || service.amount || service.total_amount || service.total || 0);
       const cost = Number(service.cost || service.cost_price || 0);
       return acc + (price - cost);
     }, 0);
 
+    // Total Service Profit combined across table and cart sales
+    const netServiceProfit = netServiceProfitTable + totalServicesProfitFromCart;
+
+    // Correct Net Profit: Product Gross Profit + Service Profit - Expenses
     const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
 
-    return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, netProfit };
+    return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, grossProductProfit, netProfit };
   }, [sales, services, expenses, timeframe, productMap, checkIfService]);
 
   // Low Stock Items (Quantity <= 5)
@@ -507,7 +561,7 @@ export default function Dashboard() {
       )}
 
       {/* Realtime Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         <div className="rounded-xl border bg-white p-5 shadow-sm flex flex-col justify-between">
           <div className="flex items-center gap-2">
             <span className="text-2xl">💰</span>
@@ -518,6 +572,19 @@ export default function Dashboard() {
           </p>
           <span className="text-[10px] text-gray-400 mt-1">
             Products: {currencySymbol}{metrics.totalProductSales.toLocaleString()} • Services: {currencySymbol}{metrics.totalServicesRevenue.toLocaleString()}
+          </span>
+        </div>
+
+        <div className="rounded-xl border bg-white p-5 shadow-sm flex flex-col justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-2xl">📈</span>
+            <span className="text-xs font-semibold text-gray-500 uppercase">Gross Profit ({timeframe})</span>
+          </div>
+          <p className={`mt-4 text-2xl font-bold ${metrics.grossProductProfit >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+            {currencySymbol}{metrics.grossProductProfit.toLocaleString()}
+          </p>
+          <span className="text-[10px] text-gray-400 mt-1">
+            Product Sales Profit
           </span>
         </div>
 
@@ -583,7 +650,7 @@ export default function Dashboard() {
                       </p>
                     </div>
                     <span className="font-bold text-emerald-600">
-                      +{currencySymbol}{Number(sale.amount || sale.total_amount || sale.unit_price || 0).toLocaleString()}
+                      +{currencySymbol}{Number(sale.total_amount || sale.amount || sale.unit_price || 0).toLocaleString()}
                     </span>
                   </div>
                 );

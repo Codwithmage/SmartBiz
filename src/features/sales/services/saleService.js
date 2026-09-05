@@ -14,6 +14,7 @@ export async function getSales(businessId) {
         product_name,
         quantity,
         unit_price,
+        cost_price,
         total_price
       )
     `)
@@ -24,7 +25,7 @@ export async function getSales(businessId) {
 }
 
 /**
- * Create a sale (inserts sale record and sale items)
+ * Create a sale (inserts sale record and sale items with cost tracking)
  */
 export async function createSale(payload) {
   const { items, ...saleData } = payload;
@@ -44,6 +45,7 @@ export async function createSale(payload) {
       product_name: item.product_name,
       quantity: item.quantity,
       unit_price: item.unit_price,
+      cost_price: item.cost_price || 0, // Captured for gross profit computation
       total_price: item.unit_price * item.quantity,
     }));
 
