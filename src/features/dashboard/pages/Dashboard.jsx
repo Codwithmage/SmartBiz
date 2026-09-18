@@ -105,7 +105,7 @@ export default function Dashboard() {
     }
   }, [currentUserId, businessInfo?.id]);
 
-  // 2. Fetch table data safely without querying unconfirmed columns in sale_items
+  // 2. Fetch table data safely with relational joins on sale_items
   const fetchDashboardData = useCallback(async (bizId) => {
     if (!bizId) return;
 
@@ -180,7 +180,7 @@ export default function Dashboard() {
     return { serviceSet: idSet, serviceNameSet: nameSet };
   }, [services]);
 
-  // Comprehensive service classifier logic
+  // Service classifier logic
   const checkIfService = useCallback(
     (item) => {
       if (!item) return false;
@@ -276,12 +276,6 @@ export default function Dashboard() {
         return new Date(d).toLocaleDateString() === todayLocalDateStr;
       }).length;
 
-      const todaysServicesFromState = services.filter((s) => {
-        const d = s.created_at || s.date;
-        if (!d) return false;
-        return new Date(d).toLocaleDateString() === todayLocalDateStr;
-      }).length;
-
       const rpcCount =
         rpcSummary.total_sales_count ??
         rpcSummary.sales_count ??
@@ -289,7 +283,7 @@ export default function Dashboard() {
         rpcSummary.count ??
         0;
 
-      const fallbackCount = todaysSalesFromState + todaysServicesFromState + pendingOfflineCount;
+      const fallbackCount = todaysSalesFromState + pendingOfflineCount;
       const finalCount = Number(rpcCount) > 0 ? Number(rpcCount) : fallbackCount;
 
       setDailySummary({
@@ -303,7 +297,7 @@ export default function Dashboard() {
     } finally {
       setLoadingSummary(false);
     }
-  }, [businessInfo?.id, sales, services]);
+  }, [businessInfo?.id, sales]);
 
   useEffect(() => {
     if (businessInfo?.id) {
@@ -337,7 +331,6 @@ export default function Dashboard() {
     };
 
     const filteredSales = sales.filter((s) => isWithinTimeframe(s));
-    const filteredServices = services.filter((s) => isWithinTimeframe(s));
     const filteredExpenses = expenses.filter((e) => isWithinTimeframe(e));
 
     let totalProductSales = 0;
@@ -349,7 +342,6 @@ export default function Dashboard() {
       const rawTotal = Number(
         sale.total_amount || sale.amount || sale.total || sale.price || sale.unit_price || sale.subtotal || 0
       );
-      // Net sale revenue after applying discount
       const actualSaleAmount = Math.max(0, (sale.total_amount !== undefined ? Number(sale.total_amount) : rawTotal - discount));
 
       if (sale.sale_items && Array.isArray(sale.sale_items) && sale.sale_items.length > 0) {
@@ -370,7 +362,6 @@ export default function Dashboard() {
           }
         });
 
-        // Deduct discount proportionally or directly from product sales total
         if (discount > 0 && saleSubtotal > 0) {
           totalProductSales = Math.max(0, totalProductSales - discount);
         }
@@ -385,12 +376,6 @@ export default function Dashboard() {
       }
     });
 
-    filteredServices.forEach((service) => {
-      totalServicesRevenue += Number(
-        service.price || service.amount || service.total_amount || service.total || 0
-      );
-    });
-
     const totalSales = totalProductSales + totalServicesRevenue;
 
     const totalExpenses = filteredExpenses.reduce(
@@ -398,7 +383,6 @@ export default function Dashboard() {
       0
     );
 
-    // Gross Product Profit (Accounting for Sale Discounts)
     const grossProductProfit = filteredSales.reduce((acc, sale) => {
       if (checkIfService(sale)) return acc;
 
@@ -418,7 +402,6 @@ export default function Dashboard() {
           return itemAcc + (itemAmount - unitCost * qty);
         }, 0);
 
-        // Deduct discount from total product profit
         return acc + (saleItemsProfit - discount);
       }
 
@@ -431,23 +414,11 @@ export default function Dashboard() {
       return acc + (actualSaleAmount - unitCost * qty);
     }, 0);
 
-    // Standalone Service Profit from `services` table
-    const netServiceProfitTable = filteredServices.reduce((acc, service) => {
-      const price = Number(service.price || service.amount || service.total_amount || service.total || 0);
-      const cost = Number(service.cost || service.cost_price || 0);
-      return acc + (price - cost);
-    }, 0);
-
-    // Total Service Profit combined across table and cart sales
-    const netServiceProfit = netServiceProfitTable + totalServicesProfitFromCart;
-
-    // Correct Net Profit: Product Gross Profit + Service Profit - Expenses
-    const netProfit = grossProductProfit + netServiceProfit - totalExpenses;
+    const netProfit = grossProductProfit + totalServicesProfitFromCart - totalExpenses;
 
     return { totalSales, totalProductSales, totalServicesRevenue, totalExpenses, grossProductProfit, netProfit };
-  }, [sales, services, expenses, timeframe, productMap, checkIfService]);
+  }, [sales, expenses, timeframe, productMap, checkIfService]);
 
-  // Low Stock Items (Quantity <= 5)
   const lowStockProducts = useMemo(() => {
     return products.filter(
       (p) => Number(p.stock_quantity ?? p.quantity ?? 0) <= 5
